@@ -1,0 +1,21 @@
+{
+  "name": "vizcopy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Internal Motive tool: select page copy → Glean agent variants → MCP apply",
+  "workspaces": [
+    "companion",
+    "mcp-server"
+  ],
+  "scripts": {
+    "start": "npm run start --workspace=companion",
+    "companion": "npm run start --workspace=companion",
+    "mcp": "npm run start --workspace=mcp-server",
+    "mcp:http": "npm run start:http --workspace=mcp-server",
+    "demo": "node scripts/demo-flow.js",
+    "install:all": "npm install"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

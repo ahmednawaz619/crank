@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Vizcopy panel demo</title>
+  <style>
+    :root {
+      --ink: #1a1a1a;
+      --muted: #555;
+      --accent: #0f766e;
+      --bg: #f4f6f5;
+    }
+    body {
+      margin: 0;
+      font: 16px/1.5 ui-sans-serif, system-ui, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 0%, #d9eee9 0%, transparent 45%),
+        radial-gradient(circle at 90% 10%, #e8eef2 0%, transparent 40%),
+        var(--bg);
+      min-height: 100vh;
+    }
+    main {
+      max-width: 42rem;
+      margin: 0 auto;
+      padding: 3rem 1.25rem;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #d8d8d8;
+      border-radius: 12px;
+      padding: 1.5rem;
+    }
+    h1 { margin: 0 0 0.5rem; font-size: 1.75rem; }
+    p { margin: 0 0 1rem; color: var(--muted); }
+    button {
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      padding: 0.55rem 0.95rem;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .hint { font-size: 0.9rem; margin-top: 1.25rem; }
+    code { background: #eee; padding: 0.1em 0.35em; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div id="hero" class="card">
+      <h1>Utilize our robust platform today</h1>
+      <p>Seamless fleet insights for every operator.</p>
+      <button type="button">Get started</button>
+    </div>
+    <p class="hint">
+      Start the companion (<code>npm run companion</code>), load the Vizcopy bookmarklet,
+      click <strong>Select</strong>, then click this card’s outer <code>div</code>.
+    </p>
+  </main>
+</body>
+</html>

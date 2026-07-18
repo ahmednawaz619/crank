@@ -1,0 +1,17 @@
+{
+  "name": "@vizcopy/companion",
+  "version": "0.1.0",
+  "private": true,
+  "main": "server.js",
+  "bin": {
+    "vizcopy": "bin/vizcopy.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}
