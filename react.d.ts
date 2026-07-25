@@ -1,12 +1,14 @@
 import type { ReactElement } from 'react';
 
 export interface CrankProps {
-  /** Full loader script URL (overrides companionUrl). */
+  /** @deprecated Panel is bundled; only use for legacy companion-hosted loaders. */
   src?: string;
-  /** Companion base URL, e.g. https://3344-….replit.dev */
+  /** Companion API base URL, e.g. https://3344-….replit.dev */
   companionUrl?: string;
   /** Alias for companionUrl. */
   url?: string;
+  /** Show even when NODE_ENV is production (Retune-style). */
+  force?: boolean;
 }
 
 export declare function resolveCrankCompanionUrl(props?: CrankProps): string;
@@ -15,16 +17,12 @@ export declare function resolveCrankLoaderSrc(props?: CrankProps): string;
 export declare function detectReplitCompanionUrl(): string | null;
 
 /**
- * Mount — injects companion loader once. Renders null.
- *
- * Prefers same-origin `/@crank/dev-loader.js` (Vite proxy) so the panel works
- * inside Replit iframe previews; falls back to public companion / localhost.
+ * Mount near app root. Boots the **bundled** panel (same-origin) — Retune pattern.
  *
  *   import { Crank } from '@ahmednawaz/crank/react'
  *   <Crank />
  *
- * Optional: `window.__CRANK_URL__` or `VITE_CRANK_URL`. Keep companion up:
- * `npx @ahmednawaz/crank start`
+ * Keep companion running for Glean/MCP: `npx @ahmednawaz/crank start`
  */
 export declare function Crank(props?: CrankProps): ReactElement | null;
 export declare const CrankLoader: typeof Crank;
@@ -34,6 +32,8 @@ declare global {
   interface Window {
     __CRANK_URL__?: string;
     __CRANK_LOADER__?: boolean;
+    __CRANK_COMPANION__?: string;
+    __CRANK_ASSET_BASE__?: string;
   }
 }
 

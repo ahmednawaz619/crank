@@ -30,7 +30,7 @@ When the user asks to start Crank, **run**:
 npx @ahmednawaz/crank@latest
 ```
 
-(one-shot: setup + inject + start). Never put `CRANK_TEAM_TOKEN` in the command. On Replit, Secrets only; do not edit `.replit`.
+(one-shot: setup + inject + start). Then **restart the Vite / dev server** so `<Crank />` mounts the **bundled** panel (same-origin — not a script from :3344). Never put `CRANK_TEAM_TOKEN` in the command. On Replit, Secrets only; do not edit `.replit`.
 
 After companion is up: **`crank_get_environment`**. Apply copy via MCP queue only.
 

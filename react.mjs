@@ -1,22 +1,18 @@
 /**
- * Browser-safe React entry — Vite-bundlable (no Node/fs).
+ * Crank React entry — Retune-style: panel UI is **bundled with the app**, not
+ * fetched from companion :3344 (that broke Replit iframe previews).
  *
  *   import { Crank } from '@ahmednawaz/crank/react'
  *   <Crank />
- *
- * Loads companion `/dev-loader.js` (prefers same-origin `/@crank` Vite proxy on Replit).
- * Requires: `npx @ahmednawaz/crank start`
  *
  * peerDependency: react >= 17
  */
 
 import { useEffect } from 'react';
-
-const PROXY_LOADER = '/@crank/dev-loader.js';
+import { bootCrankPanel } from './panel-boot.mjs';
 
 /**
  * Replit public companion host from the current preview hostname.
- * e.g. 5000-foo.replit.dev → https://3344-foo.replit.dev
  * @returns {string | null}
  */
 export function detectReplitCompanionUrl() {
@@ -28,16 +24,14 @@ export function detectReplitCompanionUrl() {
     if (!/\.replit\.dev$|\.repl\.co$|\.replit\.app$/.test(host)) {
       return null;
     }
-    const base = host.replace(/^\d+-/, '');
-    const port = 3344;
-    return `https://${port}-${base}`;
+    return `https://3344-${host.replace(/^\d+-/, '')}`;
   } catch {
     return null;
   }
 }
 
 /**
- * @param {{ companionUrl?: string, url?: string, src?: string }} [props]
+ * @param {{ companionUrl?: string, url?: string, src?: string, force?: boolean }} [props]
  * @returns {string}
  */
 export function resolveCrankCompanionUrl(props = {}) {
@@ -65,10 +59,11 @@ export function resolveCrankCompanionUrl(props = {}) {
   if (replit) {
     return replit;
   }
-  return 'http://localhost:3344';
+  return 'http://127.0.0.1:3344';
 }
 
 /**
+ * @deprecated Panel loads from the package bundle. Prefer omitting src.
  * @param {{ companionUrl?: string, url?: string, src?: string }} [props]
  * @returns {string}
  */
@@ -76,67 +71,73 @@ export function resolveCrankLoaderSrc(props = {}) {
   if (props.src) {
     return String(props.src);
   }
-  // Same-origin Vite proxy first (Replit iframe / CSP safe).
-  if (typeof window !== 'undefined' && !props.companionUrl && !props.url && !window.__CRANK_URL__) {
-    try {
-      const envUrl =
-        typeof import.meta !== 'undefined' &&
-        import.meta.env &&
-        (import.meta.env.VITE_CRANK_URL || import.meta.env.VITE_CRANK_COMPANION_URL);
-      if (!envUrl) {
-        return PROXY_LOADER;
-      }
-    } catch {
-      return PROXY_LOADER;
-    }
-  }
   return `${resolveCrankCompanionUrl(props)}/dev-loader.js`;
 }
 
-function appendLoaderScript(src, onError) {
-  const script = document.createElement('script');
-  script.src = src.includes('?') ? src : `${src}?t=${Date.now()}`;
-  script.async = true;
-  script.dataset.crankLoader = '1';
-  if (onError) {
-    script.onerror = onError;
+function isDevMode(force) {
+  if (force) {
+    return true;
   }
-  document.documentElement.appendChild(script);
-  return script;
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV) {
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    if (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'development') {
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  // Default on — Crank is a dev tool; force=false only hides when clearly production.
+  try {
+    if (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'production') {
+      return false;
+    }
+  } catch {
+    // ignore
+  }
+  return true;
 }
 
 /**
- * Mount near app root. Renders null; injects the companion loader once.
+ * Mount near app root (Retune pattern). Boots the bundled panel once.
  *
- * @param {{ companionUrl?: string, url?: string, src?: string }} [props]
+ * @param {{ companionUrl?: string, url?: string, src?: string, force?: boolean }} [props]
  */
 export function Crank(props = {}) {
-  const preferredSrc = resolveCrankLoaderSrc(props);
-
   useEffect(() => {
     if (typeof document === 'undefined') {
+      return undefined;
+    }
+    if (!isDevMode(props.force)) {
       return undefined;
     }
     if (document.getElementById('vp-shell') || document.getElementById('vp-crank-reopen')) {
       return undefined;
     }
-    if (document.querySelector('script[data-crank-loader="1"]')) {
+
+    // Legacy: explicit src still supported (companion-hosted loader)
+    if (props.src) {
+      if (document.querySelector('script[data-crank-loader="1"]')) {
+        return undefined;
+      }
+      const script = document.createElement('script');
+      script.src = props.src.includes('?') ? props.src : `${props.src}?t=${Date.now()}`;
+      script.async = true;
+      script.dataset.crankLoader = '1';
+      document.documentElement.appendChild(script);
       return undefined;
     }
 
-    const fallback = `${resolveCrankCompanionUrl(props)}/dev-loader.js`;
-    const primary = preferredSrc;
-
-    appendLoaderScript(primary, () => {
-      // Proxy missing (no Vite plugin) — fall back to public / localhost companion.
-      if (primary !== fallback && !document.getElementById('vp-shell')) {
-        document.querySelectorAll('script[data-crank-loader="1"]').forEach((el) => el.remove());
-        window.__CRANK_LOADER__ = false;
-        appendLoaderScript(fallback);
-      }
+    bootCrankPanel({
+      companionUrl: resolveCrankCompanionUrl(props)
     });
     return undefined;
-  }, [preferredSrc]);
+  }, [props.companionUrl, props.url, props.src, props.force]);
 
   return null;
 }

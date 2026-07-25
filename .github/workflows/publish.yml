@@ -23,6 +23,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Embed panel assets into package
+        run: node scripts/embed-panel.js
+
       - name: Prepare team.env for tarball
         run: node scripts/prepare-publish.js
         env:

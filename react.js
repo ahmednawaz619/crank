@@ -1,7 +1,11 @@
 'use strict';
 
 /**
- * CJS build of @ahmednawaz/crank/react (browser-safe, no Node/fs).
+ * CJS build of @ahmednawaz/crank/react.
+ * Vite apps should use the ESM build (package "import" condition).
+ *
+ * CJS cannot use import.meta.url asset resolution — falls back to companion
+ * loader, then Replit public URL.
  */
 
 const PROXY_LOADER = '/@crank/dev-loader.js';
@@ -25,8 +29,7 @@ function detectReplitCompanionUrl() {
     if (!/\.replit\.dev$|\.repl\.co$|\.replit\.app$/.test(host)) {
       return null;
     }
-    const base = host.replace(/^\d+-/, '');
-    return 'https://3344-' + base;
+    return 'https://3344-' + host.replace(/^\d+-/, '');
   } catch {
     return null;
   }
@@ -43,24 +46,11 @@ function resolveCrankCompanionUrl(props) {
   if (props.url) {
     return String(props.url).replace(/\/$/, '');
   }
-  try {
-    if (
-      typeof process !== 'undefined' &&
-      process.env &&
-      (process.env.VITE_CRANK_URL || process.env.VITE_CRANK_COMPANION_URL)
-    ) {
-      return String(
-        process.env.VITE_CRANK_URL || process.env.VITE_CRANK_COMPANION_URL
-      ).replace(/\/$/, '');
-    }
-  } catch {
-    // ignore
-  }
   const replit = detectReplitCompanionUrl();
   if (replit) {
     return replit;
   }
-  return 'http://localhost:3344';
+  return 'http://127.0.0.1:3344';
 }
 
 function resolveCrankLoaderSrc(props) {
@@ -68,12 +58,7 @@ function resolveCrankLoaderSrc(props) {
   if (props.src) {
     return String(props.src);
   }
-  if (
-    typeof window !== 'undefined' &&
-    !props.companionUrl &&
-    !props.url &&
-    !(typeof window !== 'undefined' && window.__CRANK_URL__)
-  ) {
+  if (typeof window !== 'undefined' && !props.companionUrl && !props.url && !window.__CRANK_URL__) {
     return PROXY_LOADER;
   }
   return resolveCrankCompanionUrl(props) + '/dev-loader.js';
@@ -107,16 +92,29 @@ function Crank(props) {
       return undefined;
     }
 
-    const fallback = resolveCrankCompanionUrl(props) + '/dev-loader.js';
-    appendLoaderScript(preferredSrc, function () {
-      if (preferredSrc !== fallback && !document.getElementById('vp-shell')) {
-        document.querySelectorAll('script[data-crank-loader="1"]').forEach(function (el) {
-          el.remove();
+    // Prefer ESM panel-boot when available (dynamic import).
+    var companionUrl = resolveCrankCompanionUrl(props);
+    try {
+      import('./panel-boot.mjs')
+        .then(function (mod) {
+          if (document.getElementById('vp-shell')) return;
+          mod.bootCrankPanel({ companionUrl: companionUrl });
+        })
+        .catch(function () {
+          var fallback = companionUrl + '/dev-loader.js';
+          appendLoaderScript(preferredSrc, function () {
+            if (preferredSrc !== fallback && !document.getElementById('vp-shell')) {
+              document.querySelectorAll('script[data-crank-loader="1"]').forEach(function (el) {
+                el.remove();
+              });
+              window.__CRANK_LOADER__ = false;
+              appendLoaderScript(fallback);
+            }
+          });
         });
-        window.__CRANK_LOADER__ = false;
-        appendLoaderScript(fallback);
-      }
-    });
+    } catch (_) {
+      appendLoaderScript(preferredSrc);
+    }
     return undefined;
   }, [preferredSrc]);
 

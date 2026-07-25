@@ -19,9 +19,34 @@
   const COMPANION_HTTP =
     window.__CRANK_COMPANION__ ||
     detectCompanionOrigin() ||
+    detectReplitCompanionOrigin() ||
     'http://127.0.0.1:3344';
   const COMPANION_WS = COMPANION_HTTP.replace(/^http/i, 'ws') + '/ws';
   const TEAM_TOKEN_KEY = 'crank:teamToken';
+  // Retune-style: UI assets from the npm package (same-origin), not companion.
+  const ASSET_BASE = (window.__CRANK_ASSET_BASE__ || '').replace(/\/?$/, '/');
+
+  function assetUrl(file, companionPath) {
+    if (window.__CRANK_ASSET_MAP__ && window.__CRANK_ASSET_MAP__[file]) {
+      return window.__CRANK_ASSET_MAP__[file];
+    }
+    if (ASSET_BASE && ASSET_BASE.indexOf('blob:crank/') !== 0) {
+      return ASSET_BASE + file;
+    }
+    return COMPANION_HTTP + (companionPath || '/ui/' + file);
+  }
+
+  function detectReplitCompanionOrigin() {
+    try {
+      const host = window.location.hostname || '';
+      if (!/\.replit\.dev$|\.repl\.co$|\.replit\.app$/.test(host)) {
+        return null;
+      }
+      return 'https://3344-' + host.replace(/^\d+-/, '');
+    } catch (_) {
+      return null;
+    }
+  }
 
   function getTeamToken() {
     try {
@@ -2278,8 +2303,20 @@
       chip.remove();
       window.__CRANK_LOADER__ = false;
       window.__crankActive = false;
+      if (typeof window.__crankBootEmbedded === 'function') {
+        try {
+          window.__crankBootEmbedded();
+          return;
+        } catch (_) {}
+      }
       const s = document.createElement('script');
-      s.src = COMPANION_HTTP + '/bookmarklet.js?t=' + Date.now();
+      if (window.__CRANK_ASSET_MAP__ && window.__CRANK_ASSET_MAP__['crank-bookmarklet.js']) {
+        s.src = window.__CRANK_ASSET_MAP__['crank-bookmarklet.js'];
+      } else if (ASSET_BASE && ASSET_BASE.indexOf('blob:crank/') !== 0) {
+        s.src = ASSET_BASE + 'crank-bookmarklet.js?t=' + Date.now();
+      } else {
+        s.src = COMPANION_HTTP + '/bookmarklet.js?t=' + Date.now();
+      }
       s.async = true;
       s.dataset.crankLoader = '1';
       document.documentElement.appendChild(s);
@@ -2307,9 +2344,9 @@
   window.__crankTeardown = teardown;
 
   async function boot() {
-    loadCss(COMPANION_HTTP + '/ui/crank-ui.css?v=' + Date.now());
-    await loadScript(COMPANION_HTTP + '/ui/crank-ui-helpers.js?v=' + Date.now());
-    await loadScript(COMPANION_HTTP + '/ui/text-source.js?v=' + Date.now());
+    loadCss(assetUrl('crank-ui.css', '/ui/crank-ui.css') + '?v=' + Date.now());
+    await loadScript(assetUrl('crank-ui-helpers.js', '/ui/crank-ui-helpers.js') + '?v=' + Date.now());
+    await loadScript(assetUrl('text-source.js', '/ui/text-source.js') + '?v=' + Date.now());
     buildPanelShell();
     const authed = await ensureTeamToken();
     if (!authed) {
