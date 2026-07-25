@@ -39,13 +39,15 @@ Publishes `@ahmednawaz/crank@0.1.2` with bundled Glean key (not team token).
 
 ## YOU — Step 2: Test locally (optional)
 
+Add `CRANK_TEAM_TOKEN` to your local `.env` (gitignored), then:
+
 ```bash
 cd /path/to/your-app
-CRANK_TEAM_TOKEN=your-team-passphrase npx @ahmednawaz/crank setup
-CRANK_TEAM_TOKEN=your-team-passphrase npx @ahmednawaz/crank
+npx @ahmednawaz/crank setup
+npx @ahmednawaz/crank
 ```
 
-Panel prompts for token if omitted — paste the shared phrase.
+Panel prompts for token if the env var is missing.
 
 ---
 
@@ -67,11 +69,15 @@ Add:
 npx @ahmednawaz/crank setup
 ```
 
+(`setup` copies **AGENTS.md** into your Repl so Replit Agent knows what Crank is.)
+
 ### 3c. Shell or Run — keep running
 
 ```bash
 npx @ahmednawaz/crank
 ```
+
+Do **not** put `CRANK_TEAM_TOKEN` in the command — use Secrets only.
 
 Banner should say `Team lock: ON`.
 

@@ -1,7 +1,12 @@
 {
   "name": "@ahmednawaz/crank",
-  "version": "0.1.2",
-  "description": "One-command copy iteration: select UI text → Glean variants → MCP apply. Works in Cursor, VS Code, Claude, and Replit.",
+  "version": "0.1.4",
+  "description": "Internal Motive UX copy iteration: select UI text → Glean variants → MCP apply. Cursor, Replit, Claude.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ahmednawaz619/crank.git"
+  },
+  "homepage": "https://github.com/ahmednawaz619/crank#readme",
   "bin": {
     "crank": "bin/crank.js"
   },
@@ -41,6 +46,8 @@
     "panel",
     "vite.js",
     ".env.example",
+    "AGENTS.md",
+    "REPLIT.md",
     "team.env",
     "README.md"
   ],

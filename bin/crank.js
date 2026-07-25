@@ -252,7 +252,7 @@ function openUrl(url) {
   }
 }
 
-function printBanner(projectRoot, detectEnv, initResult, runtime, modeLabel) {
+function printBanner(projectRoot, detectEnv, initResult, runtime, modeLabel, resolvedInfo) {
   const setup = runtime?.companion?.publicUrl || companionBaseUrl();
 
   console.log('');
@@ -260,10 +260,10 @@ function printBanner(projectRoot, detectEnv, initResult, runtime, modeLabel) {
   console.log('│  Crank — one-command copy tooling      │');
   console.log('└──────────────────────────────────────────┘');
   console.log(`  Project:    ${projectRoot}`);
-  if (resolved?.repoRoot && resolved.repoRoot !== projectRoot) {
-    console.log(`  Repo:       ${resolved.repoRoot} (${resolved.reason})`);
-  } else if (resolved?.reason) {
-    console.log(`  Detected:   ${resolved.source} — ${resolved.reason}`);
+  if (resolvedInfo?.repoRoot && resolvedInfo.repoRoot !== projectRoot) {
+    console.log(`  Repo:       ${resolvedInfo.repoRoot} (${resolvedInfo.reason})`);
+  } else if (resolvedInfo?.reason) {
+    console.log(`  Detected:   ${resolvedInfo.source} — ${resolvedInfo.reason}`);
   }
   console.log(`  Companion:  ${setup}`);
   if (runtime?.mcp?.mode === 'http' && runtime?.mcp?.endpoint) {
@@ -285,7 +285,7 @@ function printBanner(projectRoot, detectEnv, initResult, runtime, modeLabel) {
   if (detectEnv.isReplit) {
     console.log('  Replit:');
     console.log('    • Keep this process running (companion + HTTP MCP + dev).');
-    console.log('    • Register MCP URL in Agent → Integrations (see .crank/replit.md).');
+    console.log('    • Register MCP URL in Agent → Integrations (see .crank/replit-platform.md).');
     console.log('    • Open the webview — select copy → Get options.');
   } else if (detectEnv.hasVite && hasDevScript(detectEnv)) {
     console.log('  Ready:');
@@ -642,7 +642,11 @@ async function main() {
   }
 
   let initResult = null;
-  if (command === 'init' || command === 'run') {
+  const crankConfig = path.join(projectRoot, '.crank', 'config.json');
+  const shouldInit =
+    command === 'init' ||
+    (command === 'run' && !fs.existsSync(crankConfig) && !detectEnv.isReplit);
+  if (shouldInit) {
     initResult = initProject(projectRoot, {
       mcp: flags.mcp,
       vite: flags.vite,
@@ -651,7 +655,7 @@ async function main() {
     });
     if (command === 'init') {
       const runtime = prepareRuntime(projectRoot, detectEnv);
-      printBanner(projectRoot, detectEnv, initResult, runtime, 'init only');
+      printBanner(projectRoot, detectEnv, initResult, runtime, 'init only', resolved);
       console.log('Init complete. Run `npx crank` to start everything.');
       return;
     }
@@ -669,12 +673,12 @@ async function main() {
   if (flags.daemon && !flags.dev) {
     const existing = await checkHealth(800);
     if (existing.ok) {
-      printBanner(projectRoot, detectEnv, initResult, runtime, 'daemon (already running)');
+      printBanner(projectRoot, detectEnv, initResult, runtime, 'daemon (already running)', resolved);
       console.log('[Crank] Companion already healthy — leaving it running.');
       console.log(`[Crank] ${companionBaseUrl()}/health`);
       return;
     }
-    printBanner(projectRoot, detectEnv, initResult, runtime, 'daemon');
+    printBanner(projectRoot, detectEnv, initResult, runtime, 'daemon', resolved);
     launchDetachedDaemon(projectRoot, flags);
     await new Promise((r) => setTimeout(r, 1200));
     const health = await checkHealth(2000);
@@ -685,11 +689,11 @@ async function main() {
   if (flags.daemon && flags.dev) {
     const existing = await checkHealth(800);
     if (!existing.ok) {
-      printBanner(projectRoot, detectEnv, initResult, runtime, 'daemon + dev');
+      printBanner(projectRoot, detectEnv, initResult, runtime, 'daemon + dev', resolved);
       launchDetachedDaemon(projectRoot, { ...flags, httpMcp });
       await new Promise((r) => setTimeout(r, 1500));
     } else {
-      printBanner(projectRoot, detectEnv, initResult, runtime, 'dev (companion already up)');
+      printBanner(projectRoot, detectEnv, initResult, runtime, 'dev (companion already up)', resolved);
     }
     if (flags.open) {
       openUrl(companionBaseUrl());
@@ -704,7 +708,8 @@ async function main() {
     detectEnv,
     initResult,
     runtime,
-    detectEnv.isReplit ? 'Replit foreground' : 'foreground'
+    detectEnv.isReplit ? 'Replit foreground' : 'foreground',
+    resolved
   );
 
   if (flags.open) {

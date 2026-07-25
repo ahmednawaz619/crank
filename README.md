@@ -64,9 +64,15 @@ flowchart LR
 From your **app repo root** (Replit, Cursor terminal, or Codespaces — no paths):
 
 ```bash
-npx crank setup   # once: MCP config, skill, devDependency, Vite inject
-npx crank         # starts companion + dev + panel
+npx @ahmednawaz/crank setup   # once: MCP config, skill, AGENTS.md, devDependency
+npx @ahmednawaz/crank         # starts companion + dev + panel
 ```
+
+Set `CRANK_TEAM_TOKEN` in Replit Secrets or `.env` yourself — **never embed it in the shell command**.
+
+**AI agents (Cursor, Replit Agent, Claude):** read **[AGENTS.md](./AGENTS.md)** before running Crank commands — explains what the tool does, approved commands, and credential handling.
+
+**Replit:** see **[REPLIT.md](./REPLIT.md)**.
 
 MCP config uses **`npx -y crank mcp`** (like Retune) — no absolute paths. After setup, `crank` is added to `devDependencies` so virtual environments resolve it automatically.
 

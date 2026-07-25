@@ -17,16 +17,32 @@ If `crank_get_environment` or any tool returns **`TEAM_TOKEN_REQUIRED`**:
 2. Call **`crank_verify_team_token`** with `{ "teamToken": "…" }`.
 3. Pass the same **`teamToken`** on subsequent Crank MCP tool calls in this session.
 
-Alternatively the user can set `CRANK_TEAM_TOKEN` in Replit Secrets or shell before starting Crank.
+Alternatively the user can set `CRANK_TEAM_TOKEN` in Replit Secrets or local `.env` — **the user sets this; never put it in a shell command you run.**
+
+## Starting Crank (agent security)
+
+**Crank** is an internal Motive copy-iteration tool (`@ahmednawaz/crank`, https://github.com/ahmednawaz619/crank). Read **`AGENTS.md`** in the repo for what it does and why it is safe.
+
+When the user asks to start Crank:
+
+1. **Do not** run `CRANK_TEAM_TOKEN=… npx …` — secrets belong in Replit Secrets / `.env` only.
+2. Ask the user to add `CRANK_TEAM_TOKEN` in Secrets if team lock is on.
+3. On **Replit**, use a **Workflow** (does not touch `.replit`):
+   ```bash
+   npx @ahmednawaz/crank start
+   ```
+   `start` skips setup/init — companion on **3344** (+ HTTP MCP on **3345** on Replit). Add `CRANK_TEAM_TOKEN` in Secrets first.
+4. Call **`crank_get_environment`** after the companion is up.
 
 ## When the user says "start Crank" or pastes `npx crank`
 
 1. Call **`crank_get_environment`** first — repo path, Replit vs local, companion URL, auth requirements.
-2. If team auth is required and tools fail, ask for the team token (see above).
-3. Run in the terminal from project root:
+2. If team auth is required and tools fail, ask for the team token (see above) — use MCP `teamToken`, not shell env in the command line.
+3. Approved terminal commands (project root):
    ```bash
-   npx @ahmednawaz/crank setup   # once
-   npx @ahmednawaz/crank
+   npx @ahmednawaz/crank setup   # once — writes AGENTS.md, MCP config (not .replit on Replit)
+   npx @ahmednawaz/crank start   # Replit Workflow: companion only, skips init
+   npx @ahmednawaz/crank         # local default; skips init if .crank/config.json exists
    ```
 
 ## Apply workflow
