@@ -1118,6 +1118,36 @@
       }, delay);
     }
 
+    /** HTTP /health is enough for Ask Glean (uses POST /api/variants). WS is optional. */
+    async function probeCompanionHttp() {
+      try {
+        const resp = await fetch(COMPANION_HTTP + '/health', {
+          cache: 'no-store',
+          headers: authHeaders()
+        });
+        const data = await resp.json().catch(function () {
+          return {};
+        });
+        if (resp.ok && data && data.ok !== false) {
+          setGleanEnabled(true);
+          const wsOpen = socket && socket.readyState === 1;
+          setStatus(
+            wsOpen
+              ? 'Connected to companion'
+              : 'Companion ready — Ask Glean available (WS optional)'
+          );
+          return true;
+        }
+      } catch (_) {}
+      setGleanEnabled(false);
+      setStatus(
+        'Companion offline — run: npx @ahmednawaz/crank start (Glean needs companion)'
+      );
+      return false;
+    }
+
+    window.__crankProbeCompanion = probeCompanionHttp;
+
     try {
       if (socket) {
         try {
@@ -1215,18 +1245,18 @@
         }
       });
       socket.addEventListener('close', function () {
-        setGleanEnabled(false);
-        setStatus('Companion offline — run: npx @ahmednawaz/crank start (Glean needs companion)');
-        scheduleReconnect();
+        // Prefer HTTP health — Replit often blocks wss on secondary ports (404).
+        probeCompanionHttp().finally(function () {
+          scheduleReconnect();
+        });
       });
       socket.addEventListener('error', function () {
-        setGleanEnabled(false);
-        setStatus('Companion offline — run: npx @ahmednawaz/crank start (Glean needs companion)');
+        probeCompanionHttp();
       });
     } catch (err) {
-      setGleanEnabled(false);
-      setStatus('Companion offline — run: npx @ahmednawaz/crank start (Glean needs companion)');
-      scheduleReconnect();
+      probeCompanionHttp().finally(function () {
+        scheduleReconnect();
+      });
     }
   }
 
@@ -2411,14 +2441,18 @@
       try {
         connectWs();
       } catch (_) {}
+      if (typeof window.__crankProbeCompanion === 'function') {
+        await window.__crankProbeCompanion();
+      }
       return;
     }
-    // Companion WebSocket is optional — same as Retune when MCP bridge is down.
+    // Companion WebSocket is optional — Ask Glean uses HTTP /api/variants.
     setStatus('Panel ready — connecting to companion…');
     try {
       connectWs();
-    } catch (_) {
-      setStatus('Companion offline — run: npx @ahmednawaz/crank start (Glean needs companion)');
+    } catch (_) {}
+    if (typeof window.__crankProbeCompanion === 'function') {
+      await window.__crankProbeCompanion();
     }
   }
 

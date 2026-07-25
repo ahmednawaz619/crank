@@ -12,7 +12,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
 const { spawn } = require('child_process');
 const {
   initProject,
@@ -24,6 +23,7 @@ const {
 const { detectEnvironment } = require('../lib/detect');
 const { env } = require('../lib/env');
 const { loadTeamEnvFile } = require('../lib/load-team-env');
+const { checkHealth: probeCompanionHealth } = require('../lib/health');
 const {
   resolveUrls,
   writeRuntimeManifest,
@@ -229,26 +229,7 @@ function companionBaseUrl() {
 
 function checkHealth(timeoutMs = 1500, baseUrl) {
   const base = baseUrl || companionBaseUrl();
-  return new Promise((resolve) => {
-    const req = http.get(`${base}/health`, { timeout: timeoutMs }, (res) => {
-      let body = '';
-      res.on('data', (c) => {
-        body += c;
-      });
-      res.on('end', () => {
-        try {
-          resolve({ ok: res.statusCode === 200, status: res.statusCode, body: JSON.parse(body) });
-        } catch {
-          resolve({ ok: res.statusCode === 200, status: res.statusCode, body: null });
-        }
-      });
-    });
-    req.on('error', () => resolve({ ok: false }));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve({ ok: false });
-    });
-  });
+  return probeCompanionHealth(base, timeoutMs);
 }
 
 function printGleanHealth(body) {

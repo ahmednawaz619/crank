@@ -68,8 +68,27 @@ function loadEnvFile() {
 loadTeamEnvFile(path.resolve(__dirname, '..'));
 loadEnvFile();
 
-const PORT = Number(env('PORT', '3344'));
-const HOST = env('HOST', '127.0.0.1');
+const PORT = Number(
+  env('PORT', process.env.PORT != null && String(process.env.PORT).trim() !== ''
+    ? String(process.env.PORT)
+    : '3344')
+);
+const isReplitHost = Boolean(
+  process.env.REPL_ID ||
+    process.env.REPLIT_DEV_DOMAIN ||
+    process.env.REPL_SLUG ||
+    process.env.REPLIT_DB_URL
+);
+// Prefer CRANK_HOST, then HOST, then Replit-safe default.
+const HOST =
+  env(
+    'HOST',
+    process.env.HOST != null && String(process.env.HOST).trim() !== ''
+      ? String(process.env.HOST)
+      : isReplitHost
+        ? '0.0.0.0'
+        : '127.0.0.1'
+  );
 const PROJECT_ROOT = env('PROJECT_ROOT')
   ? path.resolve(env('PROJECT_ROOT'))
   : path.resolve(__dirname, '..');
@@ -839,9 +858,13 @@ app.post('/api/apply-nodes', (req, res) => {
 });
 
 const server = http.createServer(app);
+
+/**
+ * Manual upgrade handling — Replit and proxies often attach query strings
+ * (`/ws?teamToken=…`). The `ws` `path:` option has historically 404'd those.
+ */
 const wss = new WebSocket.Server({
-  server,
-  path: '/ws',
+  noServer: true,
   verifyClient(info, cb) {
     if (!teamAuthRequired()) {
       cb(true);
@@ -849,6 +872,33 @@ const wss = new WebSocket.Server({
     }
     cb(isTeamTokenValid(extractTeamToken(info.req)));
   }
+});
+
+function isCrankWsPath(reqUrl) {
+  try {
+    const pathname = new URL(reqUrl || '/', 'http://127.0.0.1').pathname;
+    // `/` accepted: some Replit proxies strip or rewrite `/ws` on secondary ports.
+    return (
+      pathname === '/ws' ||
+      pathname === '/ws/' ||
+      pathname === '/' ||
+      pathname === ''
+    );
+  } catch {
+    return /^\/(ws\/?)?(\?|$)/.test(String(reqUrl || ''));
+  }
+}
+
+server.on('upgrade', (req, socket, head) => {
+  if (!isCrankWsPath(req.url)) {
+    console.warn(`[Crank] WS upgrade rejected path=${req.url || '(empty)'}`);
+    socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
 });
 
 wss.on('connection', (socket, req) => {
