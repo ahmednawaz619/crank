@@ -1216,16 +1216,16 @@
       });
       socket.addEventListener('close', function () {
         setGleanEnabled(false);
-        setStatus('Companion offline — Glean unavailable (panel still usable)');
+        setStatus('Companion offline — run: npx @ahmednawaz/crank start (Glean needs companion)');
         scheduleReconnect();
       });
       socket.addEventListener('error', function () {
         setGleanEnabled(false);
-        setStatus('Companion offline — Glean unavailable (panel still usable)');
+        setStatus('Companion offline — run: npx @ahmednawaz/crank start (Glean needs companion)');
       });
     } catch (err) {
       setGleanEnabled(false);
-      setStatus('Companion offline — Glean unavailable (panel still usable)');
+      setStatus('Companion offline — run: npx @ahmednawaz/crank start (Glean needs companion)');
       scheduleReconnect();
     }
   }
@@ -2418,7 +2418,7 @@
     try {
       connectWs();
     } catch (_) {
-      setStatus('Companion offline — Glean unavailable (panel still usable)');
+      setStatus('Companion offline — run: npx @ahmednawaz/crank start (Glean needs companion)');
     }
   }
 

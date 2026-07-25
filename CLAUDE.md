@@ -24,7 +24,14 @@ When the user asks to install, setup, inject, or start Crank:
 npx @ahmednawaz/crank@latest
 ```
 
-That single command: writes config + `AGENTS.md` / `CLAUDE.md`, installs the package, patches the React entry with `<Crank />`, and starts the companion.
+That single command:
+
+1. Setup (config, `CLAUDE.md` / `AGENTS.md`, MCP, skill, dep)
+2. Inject `<Crank />` into the React entry
+3. **Start the companion in the background** (daemon) and verify `/health`
+4. Write `VITE_CRANK_URL` into `.env.local` so the panel can reach Glean via the companion
+
+**Glean is not a separate process.** Ask Glean talks to the companion (`:3344`); the companion calls the Glean API using keys from the published `team.env`. If the panel says “Companion offline”, start/fix companion — the Glean product itself is fine.
 
 Equivalent:
 
@@ -34,7 +41,7 @@ npx @ahmednawaz/crank inject
 npx @ahmednawaz/crank start
 ```
 
-Then **restart the Vite / `npm run dev` server** so the bundled panel assets resolve.
+Then **restart Vite / `npm run dev`** once so `.env.local` + `<Crank />` are picked up. Panel status should become **Connected to companion**.
 
 ## What Crank does
 

@@ -186,6 +186,7 @@ function hasDevScript(detectEnv) {
 
 function applySmartDefaults(flags, detectEnv, command) {
   if (command === 'start' && !flags.explicit.daemon) {
+    // Workflow / long-running shell: stay in foreground.
     flags.daemon = false;
     if (!flags.explicit.dev) {
       flags.dev = false;
@@ -194,7 +195,9 @@ function applySmartDefaults(flags, detectEnv, command) {
   if (detectEnv.isReplit) {
     flags.httpMcp = true;
     if (!flags.explicit.daemon) {
-      flags.daemon = false;
+      // One-shot `npx crank` must leave companion running after the agent shell exits.
+      // Explicit `start` stays foreground for Replit Workflows.
+      flags.daemon = command === 'run';
     }
   } else if (!flags.explicit.daemon) {
     flags.daemon = true;
@@ -248,6 +251,17 @@ function checkHealth(timeoutMs = 1500, baseUrl) {
   });
 }
 
+function printGleanHealth(body) {
+  if (!body || typeof body !== 'object') {
+    return;
+  }
+  if (body.gleanStub) {
+    console.log('[Crank] Glean: stub mode (set GLEAN_STUB=false + GLEAN_API_KEY for live)');
+  } else {
+    console.log('[Crank] Glean: live (API key loaded from team.env / env)');
+  }
+}
+
 function openUrl(url) {
   const platform = process.platform;
   let cmd;
@@ -283,6 +297,15 @@ function printBanner(projectRoot, detectEnv, initResult, runtime, modeLabel, res
     console.log(`  Detected:   ${resolvedInfo.source} — ${resolvedInfo.reason}`);
   }
   console.log(`  Companion:  ${setup}`);
+  const gleanKey = Boolean(process.env.GLEAN_API_KEY);
+  const gleanStub = String(process.env.GLEAN_STUB || 'true').toLowerCase() !== 'false';
+  if (gleanKey && !gleanStub) {
+    console.log('  Glean:      configured (team.env / env)');
+  } else if (gleanKey && gleanStub) {
+    console.log('  Glean:      stub mode (set GLEAN_STUB=false for live)');
+  } else {
+    console.log('  Glean:      missing GLEAN_API_KEY — Ask Glean will stub/fail');
+  }
   if (runtime?.mcp?.mode === 'http' && runtime?.mcp?.endpoint) {
     console.log(`  MCP (HTTP): ${runtime.mcp.endpoint}`);
   }
@@ -301,18 +324,19 @@ function printBanner(projectRoot, detectEnv, initResult, runtime, modeLabel, res
 
   if (detectEnv.isReplit) {
     console.log('  Replit:');
-    console.log('    • Keep this process running (companion + HTTP MCP + dev).');
-    console.log('    • Register MCP URL in Agent → Integrations (see .crank/replit-platform.md).');
-    console.log('    • Open the webview — select copy → Get options.');
+    console.log('    • Companion stays up in the background after this command.');
+    console.log('    • Expose port 3344 (and 3345 for MCP) in Networking.');
+    console.log('    • Restart Vite once so VITE_CRANK_URL from .env.local is picked up.');
+    console.log('    • Panel status should read “Connected to companion” then Ask Glean works.');
   } else if (detectEnv.hasVite && hasDevScript(detectEnv)) {
     console.log('  Ready:');
-    console.log('    • Dev server starting (or already running).');
-    console.log('    • Open your app — Crank panel loads automatically.');
+    console.log('    • Companion is running (Glean goes through it — not a separate Glean server).');
+    console.log('    • Open your app — Crank panel loads; Ask Glean needs companion connected.');
     console.log('    • Reload MCP in Cursor / VS Code / Claude after first init.');
   } else {
     console.log('  Ready:');
-    console.log(`    • Open ${setup} and drag the Crank bookmarklet.`);
-    console.log('    • Click it on any page → Select → Get options.');
+    console.log(`    • Companion: ${setup}/health`);
+    console.log('    • Open your app with <Crank /> — Ask Glean uses the companion.');
     console.log('    • Reload MCP in Cursor / VS Code / Claude after first init.');
   }
   console.log('');
@@ -752,18 +776,25 @@ async function main() {
   }
 
   if (flags.daemon && !flags.dev) {
-    const existing = await checkHealth(800);
+    const existing = await checkHealth(800, 'http://127.0.0.1:3344');
     if (existing.ok) {
       printBanner(projectRoot, detectEnv, initResult, runtime, 'daemon (already running)', resolved);
       console.log('[Crank] Companion already healthy — leaving it running.');
+      printGleanHealth(existing.body);
       console.log(`[Crank] ${companionBaseUrl()}/health`);
       return;
     }
     printBanner(projectRoot, detectEnv, initResult, runtime, 'daemon', resolved);
     launchDetachedDaemon(projectRoot, flags);
-    await new Promise((r) => setTimeout(r, 1200));
-    const health = await checkHealth(2000);
-    console.log(health.ok ? '[Crank] Health OK' : `[Crank] Health not ready — check ${LOG_FILE}`);
+    await new Promise((r) => setTimeout(r, 1500));
+    const health = await checkHealth(3000, 'http://127.0.0.1:3344');
+    if (health.ok) {
+      console.log('[Crank] Health OK — companion up (Glean via companion)');
+      printGleanHealth(health.body);
+    } else {
+      console.warn(`[Crank] Health not ready — check ${LOG_FILE}`);
+      console.warn('[Crank] Ask Glean will stay offline until companion is up.');
+    }
     return;
   }
 
