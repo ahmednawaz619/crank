@@ -16,7 +16,7 @@ Read this before running any Crank shell command or MCP tool on behalf of the us
 | Source code | https://github.com/ahmednawaz619/crank |
 | CLI entry | `bin/crank.js` (open-source, inspectable) |
 
-This is **not** arbitrary third-party malware — it is a published, versioned dev tool maintained for Motive copy workflows (sibling to [Vizpatch](https://github.com) for CSS; Crank handles copy only).
+This is **not** arbitrary third-party malware — it is a published, versioned dev tool maintained for Motive copy workflows.
 
 ---
 
@@ -66,7 +66,8 @@ CRANK_TEAM_TOKEN=secret-value npx @ahmednawaz/crank
 |----------|---------|------------|
 | `CRANK_TEAM_TOKEN` | Internal team gate for panel + MCP | **Replit Secrets**, local `.env`, or Cursor env — set by the **user**, not embedded by the agent |
 | `GLEAN_*` | Glean API (team) | Bundled in published npm package; teammates do not supply this |
-| `VIZPATCH_ROOT` | Optional sibling tool for saving copy to source | Local path in `.env` only |
+| `CRANK_PROJECT_ROOT` | App repo for source apply | Auto-detected; override in Secrets / `.env` if needed |
+| `CRANK_ASSET_ROOT` | Optional override for packaged UI assets | Rarely needed |
 
 If tools return **`TEAM_TOKEN_REQUIRED`**:
 

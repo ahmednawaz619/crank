@@ -10,7 +10,10 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "@babel/parser": "^7.28.0",
+    "@babel/traverse": "^7.28.0",
     "@cursor/sdk": "^1.0.23",
+    "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "ws": "^8.18.0"

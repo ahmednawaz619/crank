@@ -1,6 +1,6 @@
 {
   "name": "@ahmednawaz/crank",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Internal Motive UX copy iteration: select UI text → Glean variants → MCP apply. Cursor, Replit, Claude.",
   "repository": {
     "type": "git",
@@ -37,8 +37,11 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@babel/parser": "^7.28.0",
+    "@babel/traverse": "^7.28.0",
     "@cursor/sdk": "^1.0.23",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "ws": "^8.18.0",

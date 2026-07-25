@@ -359,7 +359,7 @@ function getFormattedChanges(opts = {}) {
     '3. Prefer hardcoded literals; do not invent i18n keys for dynamic/bound strings.'
   );
   lines.push(
-    '4. Optionally call `apply_copy_variant` with persist for DOM + Vizpatch text-writer.'
+    '4. Optionally call `apply_copy_variant` with persist for DOM + Crank text-writer.'
   );
   lines.push(
     '5. Always call `crank_clear_changes` (or `ack_pending_agent_prompt`) when done.'

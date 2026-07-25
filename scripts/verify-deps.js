@@ -22,7 +22,10 @@ const REQUIRED_DEPS = [
   'ws',
   '@modelcontextprotocol/sdk',
   'zod',
-  '@cursor/sdk'
+  '@cursor/sdk',
+  'cheerio',
+  '@babel/parser',
+  '@babel/traverse'
 ];
 
 function fail(msg) {
@@ -142,7 +145,8 @@ function verifyPackedInstall() {
       require(${JSON.stringify(path.join(pkgRoot, 'lib/env.js'))});
       require(${JSON.stringify(path.join(pkgRoot, 'companion/selection-store.js'))});
       require(${JSON.stringify(path.join(pkgRoot, 'companion/glean-client.js'))});
-      require(${JSON.stringify(path.join(pkgRoot, 'companion/vizpatch-bridge.js'))});
+      require(${JSON.stringify(path.join(pkgRoot, 'companion/asset-bridge.js'))});
+      require(${JSON.stringify(path.join(pkgRoot, 'companion/text-writer.js'))});
       require(${JSON.stringify(path.join(pkgRoot, 'companion/text-dispatch.js'))});
       require(${JSON.stringify(path.join(pkgRoot, 'companion/persist-apply.js'))});
       require(${JSON.stringify(path.join(pkgRoot, 'companion/agent-queue.js'))});

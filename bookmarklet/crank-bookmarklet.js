@@ -1,6 +1,6 @@
 /**
- * Crank bookmarklet — uses Vizpatch tool-ui CSS/helpers + text-source classification.
- * Preview (DOM) vs Save (source via SAVE_TEXT_CHANGE) mirrors Vizpatch text dispatch.
+ * Crank bookmarklet — tool-ui CSS/helpers + text-source classification.
+ * Preview (DOM) vs Save (source via SAVE_TEXT_CHANGE) uses Crank text dispatch.
  */
 (function () {
   // Allow re-drag / re-inject to pick up companion updates.
@@ -2269,7 +2269,7 @@
   window.__crankTeardown = teardown;
 
   async function boot() {
-    loadCss(COMPANION_HTTP + '/ui/vizpatch-ui.css?v=' + Date.now());
+    loadCss(COMPANION_HTTP + '/ui/crank-ui.css?v=' + Date.now());
     await loadScript(COMPANION_HTTP + '/ui/crank-ui-helpers.js?v=' + Date.now());
     await loadScript(COMPANION_HTTP + '/ui/text-source.js?v=' + Date.now());
     buildPanelShell();

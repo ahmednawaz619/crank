@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Text save / resolve — reuses Vizpatch text-writer + Vizpatch-like source resolution.
+ * Text save / resolve — Crank source resolution + bundled text-writer.
  *
  * Resolution order:
  *   1. Explicit file / pathHints (route-like absolute paths resolved under project root)
@@ -10,11 +10,10 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { requireVizpatch, resolveVizpatchRoot } = require('./vizpatch-bridge');
 
 let writeTextChange;
 try {
-  writeTextChange = requireVizpatch('companion/text-writer.js').writeTextChange;
+  writeTextChange = require('./text-writer').writeTextChange;
 } catch (err) {
   writeTextChange = null;
   console.warn('[Crank] text-writer unavailable:', err.message);
@@ -356,8 +355,7 @@ function saveTextChange(payload, projectRoot) {
     return {
       success: false,
       error:
-        'Vizpatch text-writer not available. Set VIZPATCH_ROOT to ' +
-        (resolveVizpatchRoot() || '(missing)')
+        'Crank text-writer not available. Ensure companion/text-writer.js is installed with the package.'
     };
   }
 

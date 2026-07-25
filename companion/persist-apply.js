@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Persist an applied variant to source via Vizpatch text-writer (SAVE_TEXT_CHANGE).
+ * Persist an applied variant to source via Crank text-writer (SAVE_TEXT_CHANGE).
  * Skips locked/dynamic nodes with an explicit reason — never silent.
  */
 

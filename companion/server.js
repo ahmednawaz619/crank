@@ -6,7 +6,7 @@
  *   - Glean agent client (stubbed)
  *   - MCP server (HTTP API used by @crank/mcp-server)
  *
- * Pattern adapted from Vizpatch companion/server.js (Express + ws on a fixed port),
+ * Pattern adapted from a companion Express + ws bridge on a fixed port,
  * stripped of CSS/source-map machinery and focused on copy selection + variants.
  */
 
@@ -19,7 +19,7 @@ const WebSocket = require('ws');
 
 const store = require('./selection-store');
 const { proposeCopyVariants } = require('./glean-client');
-const { vizpatchAsset, resolveVizpatchRoot } = require('./vizpatch-bridge');
+const { crankAsset } = require('./asset-bridge');
 const { saveTextChange, writeTextChangeAvailable } = require('./text-dispatch');
 const { persistAppliedVariant } = require('./persist-apply');
 const agentQueue = require('./agent-queue');
@@ -201,7 +201,6 @@ app.get('/health', (_req, res) => {
     ...getAuthStatus(),
     activeSessionId: store.getActiveSession()?.id || null,
     gleanStub: String(process.env.GLEAN_STUB || 'true').toLowerCase() !== 'false',
-    vizpatchRoot: resolveVizpatchRoot(),
     textWriter: writeTextChangeAvailable(),
     mcpConfig: mcpConfigPresent(),
     apiKeyConfigured: status.apiKeyConfigured,
@@ -240,12 +239,12 @@ app.get('/dev-loader.js', (_req, res) => {
   res.sendFile(file);
 });
 
-app.get('/ui/vizpatch-ui.css', (_req, res) => {
+app.get('/ui/crank-ui.css', (_req, res) => {
   const file =
-    vizpatchAsset('bookmarklet', 'vizpatch-ui.css') ||
-    path.resolve(__dirname, '..', 'bookmarklet', 'vizpatch-ui.css');
+    crankAsset('bookmarklet', 'crank-ui.css') ||
+    path.resolve(__dirname, '..', 'bookmarklet', 'crank-ui.css');
   if (!fs.existsSync(file)) {
-    res.status(404).type('text/plain').send('vizpatch-ui.css not found — set VIZPATCH_ROOT');
+    res.status(404).type('text/plain').send('crank-ui.css not found in package');
     return;
   }
   res.set({
@@ -255,6 +254,11 @@ app.get('/ui/vizpatch-ui.css', (_req, res) => {
   });
   res.type('text/css');
   res.sendFile(file);
+});
+
+// Back-compat alias for older bookmarklets still requesting the old path.
+app.get('/ui/vizpatch-ui.css', (_req, res) => {
+  res.redirect(301, '/ui/crank-ui.css');
 });
 
 app.get('/ui/text-source.js', (_req, res) => {
@@ -1131,9 +1135,7 @@ server.listen(PORT, HOST, () => {
     }`
   );
   console.log(
-    `[Crank] Vizpatch bridge: ${resolveVizpatchRoot() || 'NOT FOUND'} (text-writer ${
-      writeTextChangeAvailable() ? 'ok' : 'missing'
-    })`
+    `[Crank] Text-writer: ${writeTextChangeAvailable() ? 'ok (bundled)' : 'missing'}`
   );
 });
 

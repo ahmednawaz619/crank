@@ -105,7 +105,7 @@ export const toolDefinitions = [
   {
     name: 'apply_copy_variant',
     description:
-      'Apply a chosen Glean copy variant: update live DOM in connected browsers AND persist editable hardcoded strings to source via Vizpatch text-writer. Set persist=false for DOM-only preview.',
+      'Apply a chosen Glean copy variant: update live DOM in connected browsers AND persist editable hardcoded strings to source via Crank text-writer. Set persist=false for DOM-only preview.',
     inputSchema: {
       type: 'object',
       properties: {

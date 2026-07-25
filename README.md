@@ -4,7 +4,7 @@ Internal Motive tool for **copy iteration on live UI panels**.
 
 Select a `div` → send its text nodes to a **Glean** agent (skills/rules aware) → review 3–4 copy options → apply the chosen variant via **MCP** into whatever product the panel is running in.
 
-This repo is a **sibling extract** of patterns from [Vizpatch](../vizpatch) (inspect/select, companion bridge, text apply). It is intentionally separate so Vizpatch stays CSS-focused and Crank stays copy-focused.
+This repo owns the **copy iteration** loop (select → Glean variants → MCP apply). CSS inspection lives in a separate tooling track if needed.
 
 ---
 
@@ -52,7 +52,7 @@ flowchart LR
 1. **Select** — Bookmarklet hover/click picks a `div`, extracts text nodes (`path`, `role`, `text`), posts to companion `/api/selection`.
 2. **Propose** — Companion calls Glean (`glean-client.js`) with selection context. Stub returns deterministic variants when `GLEAN_STUB=true` (count = `CRANK_GLEAN_OPTION_COUNT`, default 3).
 3. **Review** — Variants appear in the bookmarklet panel and/or via MCP tool `propose_copy_variants`.
-4. **Apply** — Panel **Apply** (or MCP `apply_copy_variant`) updates live DOM **and** persists editable hardcoded literals via Vizpatch `text-writer`. **Preview** is DOM-only.
+4. **Apply** — Panel **Apply** (or MCP `apply_copy_variant`) updates live DOM **and** persists editable hardcoded literals via the bundled Crank `text-writer`. **Preview** is DOM-only.
 5. **Agent handoff (same chat)** — Panel **Agent** queues structured pending changes for MCP pull and copies a short phrase (`Apply the pending Crank change`) to the clipboard. Paste that phrase in your **current** Cursor chat (or keep an agent session that already has the `crank-apply-changes` skill). The agent calls `crank_get_formatted_changes` → edits source → `crank_clear_changes`. Optional secondary: **Open new chat instead** uses a `cursor://…/prompt` deeplink (opens a *new* prefilled chat — not the same Composer).
 
 **There is no silent push into the IDE chat panel.** Cursor has no public “append to current Composer” API. MCP is pull-only (the agent calls tools). Prompt deeplinks always require user confirm ([docs](https://cursor.com/docs/reference/deeplinks): “never trigger automatic execution”) and open a new chat. Community workarounds (`composer.newAgentChat` + clipboard paste) also start a new chat — Crank does not ship those as primary. A background run via Cursor SDK / CLI (`Agent.prompt`, `agent -p`) is a separate agent — not the Composer chat — and needs `CURSOR_API_KEY`.
@@ -89,16 +89,18 @@ That automatically:
 
 Stop local daemon: `npx crank stop`
 
-### Vizpatch reuse (UI + text dispatch)
+### UI + text dispatch (bundled)
 
-Set `VIZPATCH_ROOT` (defaults to sibling `../vizpatch`). Crank reuses:
+No external sibling tool required. Crank ships:
 
-- **tool-ui CSS** — `/ui/vizpatch-ui.css`
+- **tool-ui CSS** — `/ui/crank-ui.css`
 - **control helpers** — `/ui/crank-ui-helpers.js` (buttons, fields, textareas)
 - **hardcoded vs dynamic/bound** — `/ui/text-source.js` (`classifyTextSource`)
 - **DOM preview** — Preview / Discard (`PREVIEW_TEXT_CHANGE`)
-- **source save** — Save source (`SAVE_TEXT_CHANGE` → Vizpatch `text-writer.js`)
+- **source save** — Save source (`SAVE_TEXT_CHANGE` → bundled `companion/text-writer.js`)
 - Locked nodes show a badge + reason and cannot be edited in-panel
+
+Optional: `CRANK_ASSET_ROOT` overrides where packaged UI assets are loaded from (defaults to this install).
 
 Useful variants:
 
@@ -240,16 +242,16 @@ crank/
 
 ---
 
-## What was reused from Vizpatch vs new
+## Architecture notes
 
 | Area | Approach |
 |------|----------|
-| Element picker (highlight, click, Esc) | **Forked pattern** from `extension/content.js` / bookmarklet inspect |
-| Companion Express + WS on fixed port | **Forked pattern** from `companion/server.js` (stripped CSS/sourcemap/VFS) |
-| Text node write-back | **Simplified invent** — live DOM by path index; source-file `text-writer.js` not copied yet |
-| Glean client + skills/ | **New** |
-| MCP tool surface | **New** |
-| tool-ui / CSS inspector chrome | **Not reused** (out of scope) |
+| Element picker (highlight, click, Esc) | Companion bookmarklet inspect |
+| Companion Express + WS on fixed port | `companion/server.js` |
+| Text node write-back | Bundled `companion/text-writer.js` (HTML + JS/TS literals) |
+| Glean client + skills/ | Crank-owned |
+| MCP tool surface | Crank-owned |
+| Panel UI CSS / helpers | Bundled `bookmarklet/crank-ui.css` + helpers |
 
 ---
 
@@ -258,7 +260,7 @@ crank/
 1. Drop real `GLEAN_API_KEY` / `GLEAN_AGENT_ID`; set `GLEAN_STUB=false`.
 2. Align request/response schema in `companion/glean-client.js` with the Motive Glean agent contract.
 3. Point Glean at `skills/` (or sync rules into Glean’s skill store).
-4. Optionally port Vizpatch `text-writer.js` for source-file persistence when the panel maps to a known project root.
+4. Confirm Apply persists via bundled text-writer when the panel maps to a known project root (`CRANK_PROJECT_ROOT`).
 5. For Replit: deploy companion + MCP HTTP behind HTTPS; document the Integrations URL + `X-API-Key`.
 6. Harden MCP HTTP to the official Streamable HTTP transport if Replit’s client requires it beyond JSON-RPC `/mcp`.
 

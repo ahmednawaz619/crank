@@ -1,5 +1,5 @@
 /**
- * Text source classification — ported from Vizpatch bookmarklet classifyTextSource.
+ * Text source classification — Crank bookmarklet classifyTextSource.
  * Hardcoded / static labels are editable; dynamic/bound data is locked.
  */
 (function (root) {

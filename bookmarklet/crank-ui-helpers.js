@@ -1,5 +1,5 @@
 /**
- * Crank UI helpers — reused from Vizpatch tool-ui / vizpatch-ui-helpers.
+ * Crank UI helpers — tool-ui InputField / Button markup helpers.
  */
 (function (root) {
   'use strict';
@@ -17,7 +17,7 @@
     return escapeHtml(value).replace(/\n/g, ' ');
   }
 
-  /* VizPatch UI markup helpers — mirrors tool-ui InputField / Button structure */
+  /* Crank UI markup helpers — mirrors tool-ui InputField / Button structure */
 
   function vpJoinClasses() {
     const parts = [];
@@ -176,13 +176,13 @@
     const widthStyle = opts.width ? ' style="width:' + escapeAttr(String(opts.width)) + ';"' : ' style="width:100%;"';
     return '<div class="vp-field-select"' + widthStyle + '>'
       + '<input' + vpBuildTagAttrs(hiddenAttrs) + ' />'
-      + '<div class="vp-input-surface vp-control-surface ' + shellClass + '" data-vizpatch-part="control-surface" style="width:100%;">'
+      + '<div class="vp-input-surface vp-control-surface ' + shellClass + '" data-crank-part="control-surface" style="width:100%;">'
       + '<button type="button" class="vp-field-select-trigger ' + typeClass + '" aria-haspopup="listbox" aria-expanded="false">'
       + '<span class="vp-field-select-label">' + triggerLabel + '</span>'
       + vpChevronSvgHtml()
       + '</button>'
       + '</div>'
-      + '<div class="vp-dropdown-menu vizpatch-hidden" role="menu">' + menuItems + '</div>'
+      + '<div class="vp-dropdown-menu crank-hidden" role="menu">' + menuItems + '</div>'
       + '</div>';
   }
 
@@ -196,7 +196,7 @@
     const typeClass = size === 'compact' ? 'vp-compact-control-typography' : 'vp-control-typography';
     const areaAttrs = Object.assign({}, attrs || {}, { class: vpJoinClasses('vp-textarea-native', typeClass, attrs && attrs.class) });
     const shellClass = vpShellSizeClass(size);
-    return '<div class="vp-input-surface vp-input-surface--textarea vp-control-surface ' + shellClass + '" data-vizpatch-part="control-surface" style="width:100%;">'
+    return '<div class="vp-input-surface vp-input-surface--textarea vp-control-surface ' + shellClass + '" data-crank-part="control-surface" style="width:100%;">'
       + '<textarea' + vpBuildTagAttrs(areaAttrs) + '>' + escapeHtml(content || '') + '</textarea>'
       + '</div>';
   }
