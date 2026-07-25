@@ -1,10 +1,9 @@
 {
   "servers": {
     "crank": {
-      "type": "stdio",
       "command": "node",
       "args": [
-        "/Users/ahmed.nawaz/Downloads/vizcopy/mcp-server/index.js"
+        "/Users/ahmed.nawaz/Downloads/crank/mcp-server/index.js"
       ],
       "env": {
         "CRANK_COMPANION_URL": "http://127.0.0.1:3344",

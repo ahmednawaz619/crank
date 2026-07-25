@@ -20,20 +20,13 @@ import {
 import express from 'express';
 import { toolDefinitions, callTool } from './tools.js';
 
-const MODE = (
-  process.env.CRANK_MCP_MODE ||
-  process.env.VIZCOPY_MCP_MODE ||
-  'stdio'
-).toLowerCase();
-const HTTP_PORT = Number(
-  process.env.CRANK_MCP_HTTP_PORT || process.env.VIZCOPY_MCP_HTTP_PORT || 3345
-);
-const API_KEY =
-  process.env.CRANK_MCP_API_KEY || process.env.VIZCOPY_MCP_API_KEY || '';
+const MODE = (process.env.CRANK_MCP_MODE || 'stdio').toLowerCase();
+const HTTP_PORT = Number(process.env.CRANK_MCP_HTTP_PORT || 3345);
+const API_KEY = process.env.CRANK_MCP_API_KEY || '';
 
 function createMcpServer() {
   const server = new Server(
-    { name: 'crank', version: '0.1.0' },
+    { name: 'crank', version: '0.1.2' },
     { capabilities: { tools: {} } }
   );
 

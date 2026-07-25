@@ -3,14 +3,12 @@
  * Used by Cursor / Claude Desktop (stdio) and Replit Agent (remote HTTP MCP).
  */
 
-const COMPANION_URL = (
-  process.env.CRANK_COMPANION_URL ||
-  process.env.VIZCOPY_COMPANION_URL ||
-  'http://127.0.0.1:3344'
-).replace(/\/$/, '');
+const COMPANION_URL = (process.env.CRANK_COMPANION_URL || 'http://127.0.0.1:3344').replace(
+  /\/$/,
+  ''
+);
 
-const TEAM_TOKEN =
-  process.env.CRANK_TEAM_TOKEN || process.env.VIZCOPY_TEAM_TOKEN || '';
+const TEAM_TOKEN = process.env.CRANK_TEAM_TOKEN || '';
 
 const teamTokenSchema = {
   teamToken: {
@@ -21,20 +19,7 @@ const teamTokenSchema = {
 };
 
 /** Glean Robot Content Designer often takes 90–140s; allow up to 5 min. */
-const GLEAN_VARIANTS_TIMEOUT_MS = Number(
-  process.env.CRANK_VARIANTS_TIMEOUT_MS ||
-    process.env.VIZCOPY_VARIANTS_TIMEOUT_MS ||
-    300000
-);
-
-/** Legacy vizcopy_* MCP tool names — aliases for one release (see callTool). */
-const LEGACY_TOOL_ALIASES = {
-  vizcopy_get_pending_changes: 'crank_get_pending_changes',
-  vizcopy_get_formatted_changes: 'crank_get_formatted_changes',
-  vizcopy_watch_changes: 'crank_watch_changes',
-  vizcopy_clear_changes: 'crank_clear_changes',
-  vizcopy_status: 'crank_status'
-};
+const GLEAN_VARIANTS_TIMEOUT_MS = Number(process.env.CRANK_VARIANTS_TIMEOUT_MS || 300000);
 
 async function companionFetch(pathname, options = {}) {
   const { timeoutMs, teamToken, ...fetchOpts } = options;
@@ -259,57 +244,6 @@ export const toolDefinitions = [
       properties: {}
     }
   },
-  // Legacy aliases — keep registered so existing MCP configs keep working.
-  {
-    name: 'vizcopy_get_pending_changes',
-    description: 'Legacy alias for crank_get_pending_changes.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        enriched: { type: 'boolean' }
-      }
-    }
-  },
-  {
-    name: 'vizcopy_get_formatted_changes',
-    description: 'Legacy alias for crank_get_formatted_changes.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        fidelity: { type: 'string', enum: ['minimal', 'standard', 'full'] },
-        clear: { type: 'boolean' }
-      }
-    }
-  },
-  {
-    name: 'vizcopy_watch_changes',
-    description: 'Legacy alias for crank_watch_changes.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        timeoutMs: { type: 'number' },
-        sinceId: { type: 'string' }
-      }
-    }
-  },
-  {
-    name: 'vizcopy_clear_changes',
-    description: 'Legacy alias for crank_clear_changes.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: { type: 'string' }
-      }
-    }
-  },
-  {
-    name: 'vizcopy_status',
-    description: 'Legacy alias for crank_status.',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
   {
     name: 'get_pending_agent_prompt',
     description:
@@ -358,7 +292,6 @@ function formatJson(data) {
 }
 
 export async function callTool(name, args = {}) {
-  name = LEGACY_TOOL_ALIASES[name] || name;
   const teamToken = args.teamToken || TEAM_TOKEN || '';
   const withToken = (opts = {}) => ({ ...opts, teamToken: opts.teamToken || teamToken });
   switch (name) {

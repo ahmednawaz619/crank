@@ -68,13 +68,8 @@ function crank(options = {}) {
   };
 }
 
-// Backward compat for projects still using vizcopy() from an older init.
-const vizcopy = crank;
-
 module.exports = {
   crank,
-  vizcopy,
   crankDevLoader: crank,
-  vizcopyDevLoader: vizcopy,
   resolveCompanionLoaderUrl
 };

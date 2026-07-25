@@ -2,4 +2,4 @@ Drag this to your bookmarks bar (companion must be running):
 
 javascript:(function(){var s=document.createElement('script');s.src='http://127.0.0.1:3344/bookmarklet.js?t='+Date.now();document.documentElement.appendChild(s);})();
 
-Or open http://127.0.0.1:3344 and drag the Vizcopy button.
+Or open http://127.0.0.1:3344 and drag the Crank button.

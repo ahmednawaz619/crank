@@ -74,7 +74,7 @@ function normalizeWs(value) {
     .trim();
 }
 
-/** Soften DOM vs source differences after tag stripping (e.g. "vizcopy ." vs "vizcopy."). */
+/** Soften DOM vs source differences after tag stripping (e.g. "crank ." vs "crank."). */
 function softenText(value) {
   return normalizeWs(value)
     .replace(/\s+([.,!?;:])/g, '$1')

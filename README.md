@@ -113,7 +113,7 @@ npx crank stop          # stop daemon
 ## Manual companion-only start
 
 ```bash
-cd /Users/ahmed.nawaz/Downloads/vizcopy
+cd ~/Downloads/crank
 cp .env.example .env   # if needed
 npm install
 node bin/crank.js start --daemon --no-open
@@ -136,7 +136,7 @@ Companion must be running. Add to MCP config:
   "mcpServers": {
     "crank": {
       "command": "node",
-      "args": ["/Users/ahmed.nawaz/Downloads/vizcopy/mcp-server/index.js"],
+      "args": ["~/Downloads/crank/mcp-server/index.js"],
       "env": {
         "CRANK_COMPANION_URL": "http://127.0.0.1:3344",
         "CRANK_MCP_MODE": "stdio"
@@ -162,8 +162,6 @@ Tools:
 | `get_pending_agent_prompt` | Legacy: read full queued prompt |
 | `ack_pending_agent_prompt` | Legacy: clear pending after applying |
 | `queue_agent_prompt` | Queue a variant for Cursor (same as **Agent**) |
-
-Legacy `vizcopy_*` tool names remain registered as aliases for one release.
 
 ### MCP (HTTP / Replit)
 
@@ -226,7 +224,7 @@ Findings (as of Dec 2025 / docs current through 2026):
 ## Repo layout
 
 ```text
-crank/  (package name; repo may still be vizcopy/)
+crank/
 ├── bin/crank.js          # CLI: init, start --daemon, stop, status
 ├── bookmarklet/          # Div picker + text extract + panel
 ├── companion/            # Express + WebSocket bridge + Glean client

@@ -58,5 +58,3 @@ Alternatively the user can set `CRANK_TEAM_TOKEN` in Replit Secrets or shell bef
 | `crank_status` | Pending queue status |
 
 Pass optional **`teamToken`** on any tool when `teamAuthRequired` is true.
-
-Legacy `vizcopy_*` tool names are aliases for the same handlers (one release).

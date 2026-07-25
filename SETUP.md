@@ -7,7 +7,7 @@ Everything below that says **you** must be done on your machine or in Replit. Ev
 ## Already done (in the repo)
 
 - GitHub: https://github.com/ahmednawaz619/crank (public)
-- Package name: `@ahmednawaz619/crank@0.1.1`
+- Package name: `@ahmednawaz619/crank@0.1.2`
 - Team passphrase lock (`CRANK_TEAM_TOKEN`) on panel + MCP + WebSocket
 - Agent asks user for token via `crank_verify_team_token`
 - Auto-detect project root (no paths in Replit / Cursor)
@@ -15,18 +15,11 @@ Everything below that says **you** must be done on your machine or in Replit. Ev
 
 ---
 
-## YOU — Step 0: Pick a team passphrase (once)
+## YOU — Step 0: Team passphrase (once)
 
-Choose a shared phrase only your team knows, e.g. `motive-crank-2026`.
+A secure token is generated in your local `.env` as `CRANK_TEAM_TOKEN` (gitignored).
 
-Add it to your Crank `.env` (never commit):
-
-```bash
-# /Users/ahmed.nawaz/Downloads/vizcopy/.env
-CRANK_TEAM_TOKEN=motive-crank-2026
-```
-
-Share this phrase with teammates via Slack / 1Password — **not** in GitHub or npm.
+Share that phrase with teammates via Slack / 1Password — **not** in GitHub or npm.
 
 When `CRANK_TEAM_TOKEN` is set, the companion requires it for the panel and MCP. The npm package does **not** include this token.
 
@@ -36,11 +29,11 @@ When `CRANK_TEAM_TOKEN` is set, the companion requires it for the panel and MCP.
 
 ```bash
 npm login
-cd /Users/ahmed.nawaz/Downloads/vizcopy
+cd ~/Downloads/crank
 npm run publish:team
 ```
 
-Publishes `@ahmednawaz619/crank@0.1.1` with bundled Glean key (not team token).
+Publishes `@ahmednawaz619/crank@0.1.2` with bundled Glean key (not team token).
 
 ---
 
@@ -48,8 +41,8 @@ Publishes `@ahmednawaz619/crank@0.1.1` with bundled Glean key (not team token).
 
 ```bash
 cd /path/to/your-app
-CRANK_TEAM_TOKEN=motive-crank-2026 npx @ahmednawaz619/crank setup
-CRANK_TEAM_TOKEN=motive-crank-2026 npx @ahmednawaz619/crank
+CRANK_TEAM_TOKEN=your-team-passphrase npx @ahmednawaz619/crank setup
+CRANK_TEAM_TOKEN=your-team-passphrase npx @ahmednawaz619/crank
 ```
 
 Panel prompts for token if omitted — paste the shared phrase.
@@ -128,7 +121,7 @@ They do **not** need Glean keys or GitHub access.
 ## Summary
 
 ```
-YOU:  pick CRANK_TEAM_TOKEN → add to .env → npm login → npm run publish:team
+YOU:  CRANK_TEAM_TOKEN in .env → npm login → npm run publish:team
 YOU:  share token with team (Slack)
 TEAM: Replit Secrets CRANK_TEAM_TOKEN + npx @ahmednawaz619/crank setup && npx @ahmednawaz619/crank
 AGENT: ask user for team token → crank_verify_team_token → other tools

@@ -14,7 +14,7 @@ const resolved = resolveProjectRoot(repoRoot);
 assert.ok(resolved.projectRoot, 'projectRoot');
 assert.ok(resolved.source, 'source');
 
-assert.strictEqual(hasFrameworkMarker(repoRoot), false, 'vizcopy repo has no vite at root');
+assert.strictEqual(hasFrameworkMarker(repoRoot), false, 'crank repo has no vite at root');
 
 const fakeMonorepo = path.join(repoRoot, 'scripts', 'fixtures', 'fake-app');
 // Just test findAppDirectory logic on repo root

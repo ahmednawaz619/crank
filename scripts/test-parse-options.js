@@ -21,8 +21,8 @@ const classicMd = `
 `;
 
 const bodyNMd = `
-| **Option 1 (original)** | Heading: Cursor MCP (Agent handoff) Body 1: MCP cannot push into Cursor chat by itself. Body 2: Point .cursor/mcp.json at vizcopy. Body 3: Reload MCP after config changes. CTA: Open Cursor |
-| **Option 2 (AI-written) ✅ Recommended** | Heading: Hand off to Cursor Agent<br>Body 1: The agent must call tools — MCP cannot push chat alone.<br>Body 2: Confirm .cursor/mcp.json for vizcopy.<br>Body 3: Reload MCP servers after changes.<br>CTA: Apply pending change |
+| **Option 1 (original)** | Heading: Cursor MCP (Agent handoff) Body 1: MCP cannot push into Cursor chat by itself. Body 2: Point .cursor/mcp.json at crank. Body 3: Reload MCP after config changes. CTA: Open Cursor |
+| **Option 2 (AI-written) ✅ Recommended** | Heading: Hand off to Cursor Agent<br>Body 1: The agent must call tools — MCP cannot push chat alone.<br>Body 2: Confirm .cursor/mcp.json for crank.<br>Body 3: Reload MCP servers after changes.<br>CTA: Apply pending change |
 `;
 
 // Robot Content Designer score/rubric columns after Heading/Body/CTA
@@ -115,7 +115,7 @@ function assertDistinctTexts(nodes, expected) {
   assertDistinctTexts(v1.nodes, [
     'Hand off to Cursor Agent',
     'The agent must call tools — MCP cannot push chat alone.',
-    'Confirm .cursor/mcp.json for vizcopy.',
+    'Confirm .cursor/mcp.json for crank.',
     'Reload MCP servers after changes.',
     'Apply pending change'
   ]);

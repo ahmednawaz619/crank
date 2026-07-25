@@ -32,5 +32,3 @@ Crank queues structured copy updates from the browser panel **Agent** button. Yo
 | `crank_watch_changes` | Long-poll until a pending queue appears |
 | `crank_clear_changes` | Clear after apply |
 | `crank_status` | Whether anything is queued |
-
-Legacy `vizcopy_*` tool names are aliases for the same handlers (one release).

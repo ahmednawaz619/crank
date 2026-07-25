@@ -6,6 +6,5 @@ team.env
 .DS_Store
 dist/
 .crank/secrets.json
-.vizcopy/
 coverage/
 .crank/runtime.json
