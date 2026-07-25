@@ -33,7 +33,7 @@ When the user asks to start Crank:
    ```
    `start` skips setup/init — companion on **3344** (+ HTTP MCP on **3345** on Replit). Add `CRANK_TEAM_TOKEN` in Secrets first.
 4. Call **`crank_get_environment`** after the companion is up.
-5. **Panel (React):** `pnpm add -D @ahmednawaz/crank` then mount `<Crank />` from `@ahmednawaz/crank/react` in `main.tsx` (Retune pattern — no Vite plugin). Keep companion Workflow running. See `.crank/react-mount.md`.
+5. **Panel:** `npx @ahmednawaz/crank inject` patches `main.tsx` with `<Crank />` (no manual edits). Then keep companion Workflow running with `npx @ahmednawaz/crank start`.
 
 ## When the user says "start Crank" or pastes `npx crank`
 

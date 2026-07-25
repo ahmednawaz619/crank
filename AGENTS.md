@@ -105,33 +105,30 @@ See **[REPLIT.md](./REPLIT.md)** and `.crank/replit.md` (URLs after first run).
 
 ## Panel injection (Retune pattern)
 
-**Preferred for React apps** — install the package and mount once:
+**Preferred** — CLI inject (no manual edits):
 
 ```bash
-pnpm add -D @ahmednawaz/crank
-# or: npm i -D @ahmednawaz/crank
+npx @ahmednawaz/crank@latest setup
+npx @ahmednawaz/crank inject
+npx @ahmednawaz/crank start
 ```
+
+`inject` finds `main.tsx` / `createRoot` / `ReactDOM.render`, adds:
 
 ```tsx
 import { Crank } from '@ahmednawaz/crank/react'
-
-// main.tsx
-<App />
+// ...
 <Crank />
 ```
 
-Keep companion running: `npx @ahmednawaz/crank start`
-
-On Replit set public companion URL if needed: `window.__CRANK_URL__`, `<Crank companionUrl="…" />`, or `VITE_CRANK_URL`.
+Same idea as Sentry/Clerk setup CLIs. See `.crank/react-mount.md` after setup.
 
 | Stack | Integration |
 |-------|-------------|
-| **React + Vite** | `<Crank />` from `@ahmednawaz/crank/react` (bundled like Retune — **no Vite plugin**) |
-| **Next.js** | `<Crank />` from `@ahmednawaz/crank/next` |
-| **Vue / Svelte / vanilla Vite** | Optional `@ahmednawaz/crank/vite` plugin |
-| **Any** | Bookmarklet from companion URL |
-
-Agents: do **not** invent Vite-plugin path workarounds for React apps. See `.crank/react-mount.md` / `.crank/injection.md` after setup.
+| **React** | `npx @ahmednawaz/crank inject` |
+| **Next.js** | same inject, or `import { Crank } from '@ahmednawaz/crank/next'` |
+| **Non-React Vite** | Optional `@ahmednawaz/crank/vite` plugin |
+| **Fallback** | Companion bookmarklet |
 
 ---
 

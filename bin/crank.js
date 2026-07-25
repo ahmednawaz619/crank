@@ -31,6 +31,7 @@ const {
   readRuntimeManifest
 } = require('../lib/urls');
 const { resolveProjectRoot, describeEnvironment } = require('../lib/resolve-project');
+const { injectCrank } = require('../lib/wire-react');
 
 const LOG_FILE = env('LOG', '/tmp/crank-companion.log');
 const PID_FILE = env('PID_FILE', '/tmp/crank-companion.pid');
@@ -39,11 +40,12 @@ function printHelp() {
   process.stdout.write(`Usage: crank [command] [project-root]
 
 Commands:
-  (default)     Init + start everything (companion, MCP, dev server when present)
-  setup         Same as init — Retune-style one-time config (alias for init)
-  init          Only write IDE / Vite / MCP setup into the project
-  mcp           Start stdio MCP server (used by npx crank mcp in IDE configs)
-  start         Start companion (assumes init already done)
+  (default)     Init + start companion (and npm run dev when present)
+  setup         One-time config (MCP, skill, package.json) — alias for init
+  init          Same as setup
+  inject        Patch main.tsx / entry with import { Crank } + <Crank /> (Retune-style)
+  mcp           Start stdio MCP server (used by IDE MCP configs)
+  start         Start companion (assumes setup already done)
   stop          Stop daemon companion + HTTP MCP listeners
   doctor        Print detected environment + runtime URLs
   status        Print whether companion /health responds
@@ -60,11 +62,16 @@ Flags:
   --http-mcp    Force HTTP MCP (Replit auto-enables this)
   -h, --help    Show help
 
+First run (React / Retune-style):
+  npx @ahmednawaz/crank@latest setup
+  npx @ahmednawaz/crank inject
+  npx @ahmednawaz/crank start
+
 Examples:
-  cd ~/code/my-app && npx crank setup && npx crank
-  npx crank
-  npx crank mcp
-  npx crank stop
+  cd ~/code/my-app && npx @ahmednawaz/crank setup && npx @ahmednawaz/crank inject
+  npx @ahmednawaz/crank
+  npx @ahmednawaz/crank mcp
+  npx @ahmednawaz/crank stop
 `);
 }
 
@@ -113,7 +120,7 @@ function parseArgs(argv) {
   }
   let command = 'run';
   let projectRoot = process.cwd();
-  const cmds = new Set(['init', 'setup', 'start', 'doctor', 'stop', 'status', 'mcp']);
+  const cmds = new Set(['init', 'setup', 'start', 'doctor', 'stop', 'status', 'mcp', 'inject']);
   if (positional[0] === 'setup') {
     command = 'init';
   } else if (cmds.has(positional[0])) {
@@ -615,6 +622,37 @@ async function main() {
   if (command === 'stop') {
     await stopDaemon();
     return;
+  }
+
+  if (command === 'inject') {
+    if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
+      console.error(`Project root not found: ${projectRoot}`);
+      process.exit(1);
+    }
+    console.log(`[Crank] Injecting <Crank /> into ${projectRoot}`);
+    const result = injectCrank(projectRoot, { install: true });
+    if (result.installed) {
+      console.log(`[Crank] Installed package (${result.installCommand})`);
+    } else if (result.installError) {
+      console.warn(`[Crank] Package install warning: ${result.installError}`);
+      console.warn('[Crank] Try: pnpm add -D @ahmednawaz/crank');
+    }
+    if (result.reactWire?.wired) {
+      console.log(`[Crank] Patched ${result.reactWire.file}`);
+      console.log('[Crank] Added: import { Crank } from \'@ahmednawaz/crank/react\' + <Crank />');
+      console.log('[Crank] Next: npx @ahmednawaz/crank start');
+      process.exit(0);
+    }
+    if (result.reactWire?.reason === 'already-present') {
+      console.log(`[Crank] Already injected in ${result.reactWire.file}`);
+      process.exit(0);
+    }
+    console.error(
+      `[Crank] Could not inject (${result.reactWire?.reason || 'unknown'}).` +
+        (result.reactWire?.file ? ` Looked at ${result.reactWire.file}.` : '') +
+        ' Add manually:\n\n  import { Crank } from \'@ahmednawaz/crank/react\'\n  <Crank />\n'
+    );
+    process.exit(1);
   }
 
   if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {

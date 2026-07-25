@@ -102,34 +102,17 @@ No external sibling tool required. Crank ships:
 
 Optional: `CRANK_ASSET_ROOT` overrides where packaged UI assets are loaded from (defaults to this install).
 
-### Panel injection (Retune-style React)
-
-**Preferred** — install and mount like Retune:
+### Panel injection (Retune-style)
 
 ```bash
-pnpm add -D @ahmednawaz/crank
+npx @ahmednawaz/crank@latest setup
+npx @ahmednawaz/crank inject    # patches main.tsx — no manual edits
+npx @ahmednawaz/crank start
 ```
 
-```tsx
-import { Crank } from '@ahmednawaz/crank/react'
+`inject` installs the package and adds `import { Crank }` + `<Crank />` (Sentry/Clerk-style).
 
-createRoot(document.getElementById('root')!).render(
-  <>
-    <App />
-    <Crank />
-  </>
-)
-```
-
-Companion: `npx @ahmednawaz/crank start`  
 Replit public URL: `window.__CRANK_URL__` or `<Crank companionUrl="https://3344-….replit.dev" />` or `VITE_CRANK_URL`.
-
-| Stack | Integration |
-|-------|-------------|
-| **React** | `<Crank />` — bundled by Vite, **no plugin** |
-| **Next.js** | `import { Crank } from '@ahmednawaz/crank/next'` |
-| **Non-React Vite** | Optional `import { crank } from '@ahmednawaz/crank/vite'` |
-| **Fallback** | Companion bookmarklet |
 
 Useful variants:
 
