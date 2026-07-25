@@ -33,6 +33,7 @@ jobs:
           GLEAN_STUB: ${{ secrets.GLEAN_STUB }}
 
       - run: node scripts/verify-deps.js
+        # Full pack+install smoke: catches missing files and broken relative requires.
 
       - name: Upgrade npm for OIDC trusted publishing
         run: npm install -g npm@latest
