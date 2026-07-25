@@ -1,6 +1,6 @@
 {
   "name": "@ahmednawaz/crank",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Internal Motive UX copy iteration: select UI text \u2192 Glean variants \u2192 MCP apply. Cursor, Replit, Claude.",
   "repository": {
     "type": "git",
