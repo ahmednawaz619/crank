@@ -4,8 +4,9 @@
 /**
  * Pre-publish integrity checks:
  *  1. Root runtime deps exist in node_modules
- *  2. Every relative require()/import in shipped JS resolves on disk
- *  3. npm pack install can load companion + MCP entrypoints
+ *  2. package.json "files" includes every path imported by the React/panel entry
+ *  3. Every relative require()/import in shipped JS/MJS resolves on disk
+ *  4. npm pack install can load companion, MCP, and panel-boot/react entries
  */
 
 const fs = require('fs');
@@ -14,7 +15,38 @@ const { execSync, spawnSync } = require('child_process');
 const os = require('os');
 
 const root = path.resolve(__dirname, '..');
-const SHIPPED_DIRS = ['bin', 'lib', 'companion', 'mcp-server'];
+const SHIPPED_DIRS = ['bin', 'lib', 'companion', 'mcp-server', 'bookmarklet'];
+const ROOT_SHIPPED_MODULES = [
+  'react.mjs',
+  'react.js',
+  'react.d.ts',
+  'panel-boot.mjs',
+  'panel-source.mjs',
+  'next.mjs',
+  'next.js',
+  'vite.js',
+  'webpack.js'
+];
+
+/** Must be present in the published tarball — React panel chain. */
+const REQUIRED_PACK_FILES = [
+  'bin/crank.js',
+  'lib/env.js',
+  'companion/server.js',
+  'mcp-server/index.js',
+  'mcp-server/tools.js',
+  'react.mjs',
+  'react.js',
+  'panel-boot.mjs',
+  'panel-source.mjs',
+  'bookmarklet/crank-bookmarklet.js',
+  'bookmarklet/crank-ui.css',
+  'bookmarklet/crank-ui-helpers.js',
+  'bookmarklet/text-source.js',
+  'vite.js',
+  'CLAUDE.md',
+  'AGENTS.md'
+];
 
 const REQUIRED_DEPS = [
   'express',
@@ -39,14 +71,21 @@ function walkJs(dir, out = []) {
     if (entry.name === 'node_modules') continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) walkJs(full, out);
-    else if (entry.name.endsWith('.js')) out.push(full);
+    else if (/\.(js|mjs|cjs)$/.test(entry.name)) out.push(full);
   }
   return out;
 }
 
 function resolveRelative(fromFile, spec) {
   const base = path.resolve(path.dirname(fromFile), spec);
-  const candidates = [base, `${base}.js`, path.join(base, 'index.js')];
+  const candidates = [
+    base,
+    `${base}.js`,
+    `${base}.mjs`,
+    `${base}.cjs`,
+    path.join(base, 'index.js'),
+    path.join(base, 'index.mjs')
+  ];
   return candidates.find((c) => fs.existsSync(c)) || null;
 }
 
@@ -70,13 +109,70 @@ function verifyRootDeps() {
   console.log(`verify:deps OK (${REQUIRED_DEPS.length} packages)`);
 }
 
+function verifyPackageFilesField() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const files = pkg.files || [];
+  const requiredInFiles = [
+    'panel-boot.mjs',
+    'panel-source.mjs',
+    'react.mjs',
+    'react.js',
+    'bookmarklet',
+    'bin',
+    'lib',
+    'companion',
+    'mcp-server',
+    'vite.js',
+    'CLAUDE.md'
+  ];
+  const missing = requiredInFiles.filter((f) => !files.includes(f));
+  if (missing.length) {
+    fail(
+      `package.json "files" is missing required publish paths (npm will omit them):\n${missing
+        .map((m) => `  - ${m}`)
+        .join('\n')}`
+    );
+  }
+
+  for (const rel of ROOT_SHIPPED_MODULES) {
+    if (!fs.existsSync(path.join(root, rel))) {
+      fail(`Required ship file missing on disk: ${rel}`);
+    }
+  }
+
+  // React panel import chain must exist on disk before pack
+  const chain = ['react.mjs', 'panel-boot.mjs', 'panel-source.mjs'];
+  for (const rel of chain) {
+    if (!fs.existsSync(path.join(root, rel))) {
+      fail(`Panel chain broken — missing ${rel}`);
+    }
+  }
+
+  const reactSrc = fs.readFileSync(path.join(root, 'react.mjs'), 'utf8');
+  if (!reactSrc.includes("from './panel-boot.mjs'") && !reactSrc.includes('from "./panel-boot.mjs"')) {
+    fail('react.mjs must import ./panel-boot.mjs');
+  }
+  const bootSrc = fs.readFileSync(path.join(root, 'panel-boot.mjs'), 'utf8');
+  if (!bootSrc.includes("from './panel-source.mjs'") && !bootSrc.includes('from "./panel-source.mjs"')) {
+    fail('panel-boot.mjs must import ./panel-source.mjs');
+  }
+
+  console.log('verify:files OK (package.json files + panel chain)');
+}
+
 function verifyRelativeImports() {
-  const files = SHIPPED_DIRS.flatMap((d) => walkJs(path.join(root, d)));
+  const files = [
+    ...SHIPPED_DIRS.flatMap((d) => walkJs(path.join(root, d))),
+    ...ROOT_SHIPPED_MODULES.filter((f) => /\.(js|mjs|cjs)$/.test(f)).map((f) =>
+      path.join(root, f)
+    )
+  ];
   const missing = [];
   const requireRe = /require\(\s*['"](\.\.?\/[^'"]+)['"]\s*\)/g;
   const importRe = /(?:from|import)\s+['"](\.\.?\/[^'"]+)['"]/g;
 
   for (const file of files) {
+    if (!fs.existsSync(file)) continue;
     const src = fs.readFileSync(file, 'utf8');
     for (const re of [requireRe, importRe]) {
       re.lastIndex = 0;
@@ -103,6 +199,9 @@ function verifyRelativeImports() {
 }
 
 function verifyPackedInstall() {
+  // Ensure embedded panel is fresh before pack
+  execSync('node scripts/embed-panel.js', { cwd: root, stdio: 'inherit' });
+
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crank-pack-'));
   try {
     const packOut = execSync('npm pack --silent', {
@@ -115,6 +214,21 @@ function verifyPackedInstall() {
       fail(`npm pack did not produce ${tgzName}`);
     }
 
+    // List tarball contents — catch "files" omissions before install
+    const listed = execSync(`tar -tzf "${tgzPath}"`, { encoding: 'utf8' })
+      .split(/\n/)
+      .filter(Boolean)
+      .map((l) => l.replace(/^package\//, ''));
+    for (const rel of REQUIRED_PACK_FILES) {
+      if (!listed.includes(rel)) {
+        fail(
+          `npm pack tarball missing ${rel}\n` +
+            `Check package.json "files". Listed sample:\n  ${listed.slice(0, 20).join('\n  ')}`
+        );
+      }
+    }
+    console.log(`verify:tarball OK (${REQUIRED_PACK_FILES.length} required paths present)`);
+
     execSync('npm init -y', { cwd: tmp, stdio: 'ignore' });
     execSync(`npm install "${tgzPath}"`, {
       cwd: tmp,
@@ -123,25 +237,46 @@ function verifyPackedInstall() {
     });
 
     const pkgRoot = path.join(tmp, 'node_modules', '@ahmednawaz', 'crank');
-    const mustExist = [
-      'bin/crank.js',
-      'lib/env.js',
-      'companion/server.js',
-      'mcp-server/index.js',
-      'mcp-server/tools.js'
-    ];
-    for (const rel of mustExist) {
+    for (const rel of REQUIRED_PACK_FILES) {
       if (!fs.existsSync(path.join(pkgRoot, rel))) {
-        fail(`Packed tarball missing ${rel}`);
+        fail(`Packed install missing ${rel}`);
       }
     }
+
+    // Panel ESM chain (the 0.3.2 failure mode)
+    const panelCheck = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
+          import { bootCrankPanel } from ${JSON.stringify(path.join(pkgRoot, 'panel-boot.mjs'))};
+          if (typeof bootCrankPanel !== 'function') throw new Error('bootCrankPanel missing');
+          console.log('panel-boot OK');
+        `
+      ],
+      { cwd: pkgRoot, encoding: 'utf8' }
+    );
+    if (panelCheck.status !== 0) {
+      fail(`Packed panel-boot import failed:\n${panelCheck.stderr || panelCheck.stdout}`);
+    }
+
+    // react.mjs must import panel-boot (static check + resolve path on disk in pack)
+    const packedReact = fs.readFileSync(path.join(pkgRoot, 'react.mjs'), 'utf8');
+    if (
+      !packedReact.includes("from './panel-boot.mjs'") &&
+      !packedReact.includes('from "./panel-boot.mjs"')
+    ) {
+      fail('Packed react.mjs does not import ./panel-boot.mjs');
+    }
+    if (!fs.existsSync(path.join(pkgRoot, 'panel-boot.mjs'))) {
+      fail('Packed react.mjs imports panel-boot.mjs but file is missing');
+    }
+    console.log('react.mjs → panel-boot.mjs OK');
 
     // Companion: resolve all CJS requires without starting the HTTP server.
     const loadCheck = `
       process.env.CRANK_PORT = '0';
-      const Module = require('module');
-      const orig = Module.prototype.require;
-      // Intercept listen-side effects by loading only the dependency graph first.
       require(${JSON.stringify(path.join(pkgRoot, 'lib/env.js'))});
       require(${JSON.stringify(path.join(pkgRoot, 'companion/selection-store.js'))});
       require(${JSON.stringify(path.join(pkgRoot, 'companion/glean-client.js'))});
@@ -150,7 +285,6 @@ function verifyPackedInstall() {
       require(${JSON.stringify(path.join(pkgRoot, 'companion/text-dispatch.js'))});
       require(${JSON.stringify(path.join(pkgRoot, 'companion/persist-apply.js'))});
       require(${JSON.stringify(path.join(pkgRoot, 'companion/agent-queue.js'))});
-      // agent-runner may pull @cursor/sdk; that is fine if installed.
       require(${JSON.stringify(path.join(pkgRoot, 'companion/agent-runner.js'))});
       console.log('companion modules OK');
     `;
@@ -165,7 +299,6 @@ function verifyPackedInstall() {
       );
     }
 
-    // server.js starts listening on require — spawn briefly and expect no MODULE_NOT_FOUND.
     const serverPath = path.join(pkgRoot, 'companion', 'server.js');
     const server = spawnSync(
       process.execPath,
@@ -201,7 +334,6 @@ function verifyPackedInstall() {
       fail(`Packed companion server smoke failed:\n${server.stderr || server.stdout}`);
     }
 
-    // MCP: import graph (ESM).
     const mcpCheck = spawnSync(
       process.execPath,
       [
@@ -220,16 +352,21 @@ function verifyPackedInstall() {
     } catch {
       // ignore
     }
-    console.log('verify:pack OK (fresh npm pack install)');
+    console.log('verify:pack OK (fresh npm pack install + panel/react/companion/mcp)');
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
   }
 }
 
 verifyRootDeps();
+verifyPackageFilesField();
 verifyRelativeImports();
 if (process.argv.includes('--skip-pack')) {
   console.log('verify:pack skipped (--skip-pack)');
-  process.exit(0);
+} else {
+  verifyPackedInstall();
 }
-verifyPackedInstall();
