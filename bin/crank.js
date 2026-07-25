@@ -635,7 +635,11 @@ async function main() {
       console.log(`[Crank] Installed package (${result.installCommand})`);
     } else if (result.installError) {
       console.warn(`[Crank] Package install warning: ${result.installError}`);
-      console.warn('[Crank] Try: pnpm add -D @ahmednawaz/crank');
+      if (result.installHint) {
+        console.warn(`[Crank] Run manually:\n  ${result.installHint}`);
+      } else {
+        console.warn('[Crank] Try: pnpm add -D @ahmednawaz/crank');
+      }
     }
     if (result.reactWire?.wired) {
       console.log(`[Crank] Patched ${result.reactWire.file}`);
