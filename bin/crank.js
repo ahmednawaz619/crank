@@ -710,12 +710,9 @@ async function main() {
     });
   }
 
-  // One-shot parity: setup/default always try inject on React apps (idempotent).
-  if (
-    (command === 'init' || command === 'run') &&
-    detectEnv.hasReact &&
-    flags.mcp !== false
-  ) {
+  // One-shot: always try <Crank /> inject (idempotent). Do not gate on hasReact —
+  // root package.json often omits react in monorepos / Replit layouts.
+  if ((command === 'init' || command === 'run') && flags.mcp !== false) {
     const injectResult = injectCrank(projectRoot, { install: true });
     initResult = initResult || { wrote: [], projectRoot };
     initResult.inject = injectResult;
