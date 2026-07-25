@@ -176,8 +176,11 @@ function hasDevScript(detectEnv) {
 }
 
 function applySmartDefaults(flags, detectEnv, command) {
-  if (command === 'start' && !flags.explicit.dev) {
-    flags.dev = false;
+  if (command === 'start' && !flags.explicit.daemon) {
+    flags.daemon = false;
+    if (!flags.explicit.dev) {
+      flags.dev = false;
+    }
   }
   if (detectEnv.isReplit) {
     flags.httpMcp = true;
@@ -499,7 +502,7 @@ function runCompanionSupervisor(projectRoot, { foreground, httpMcp }) {
 }
 
 function launchDetachedDaemon(projectRoot, argvFlags) {
-  const args = [__filename, 'start', '--daemon', '--no-open', projectRoot];
+  const args = [__filename, 'run', '--daemon', '--no-open', projectRoot];
   if (argvFlags.httpMcp) {
     args.push('--http-mcp');
   }
