@@ -1,6 +1,6 @@
 {
   "name": "@ahmednawaz/crank",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Internal Motive UX copy iteration: select UI text → Glean variants → MCP apply. Cursor, Replit, Claude.",
   "repository": {
     "type": "git",
@@ -99,6 +99,7 @@
     "next.mjs",
     "webpack.js",
     ".env.example",
+    "CLAUDE.md",
     "AGENTS.md",
     "REPLIT.md",
     "team.env",
@@ -114,5 +115,8 @@
     "copy",
     "ux-writing",
     "react"
-  ]
+  ],
+  "devDependencies": {
+    "@ahmednawaz/crank": "^0.2.4"
+  }
 }

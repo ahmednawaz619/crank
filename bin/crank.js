@@ -62,14 +62,16 @@ Flags:
   --http-mcp    Force HTTP MCP (Replit auto-enables this)
   -h, --help    Show help
 
-First run (React / Retune-style):
-  npx @ahmednawaz/crank@latest setup
-  npx @ahmednawaz/crank inject
-  npx @ahmednawaz/crank start
+First run (one shot — any project):
+  npx @ahmednawaz/crank@latest
+
+That runs setup + inject + start.
 
 Examples:
-  cd ~/code/my-app && npx @ahmednawaz/crank setup && npx @ahmednawaz/crank inject
-  npx @ahmednawaz/crank
+  npx @ahmednawaz/crank@latest
+  npx @ahmednawaz/crank setup
+  npx @ahmednawaz/crank inject
+  npx @ahmednawaz/crank start
   npx @ahmednawaz/crank mcp
   npx @ahmednawaz/crank stop
 `);
@@ -706,13 +708,41 @@ async function main() {
       claude: flags.claude,
       scripts: true
     });
-    if (command === 'init') {
-      const runtime = prepareRuntime(projectRoot, detectEnv);
-      printBanner(projectRoot, detectEnv, initResult, runtime, 'init only', resolved);
-      printSetupNextSteps(detectEnv, runtime, initResult);
-      console.log('Setup complete. Run `npx @ahmednawaz/crank start` (Replit) or `npx @ahmednawaz/crank` (local).');
-      return;
+  }
+
+  // One-shot parity: setup/default always try inject on React apps (idempotent).
+  if (
+    (command === 'init' || command === 'run') &&
+    detectEnv.hasReact &&
+    flags.mcp !== false
+  ) {
+    const injectResult = injectCrank(projectRoot, { install: true });
+    initResult = initResult || { wrote: [], projectRoot };
+    initResult.inject = injectResult;
+    if (injectResult.reactWire?.wired && injectResult.reactWire.file) {
+      initResult.wrote = initResult.wrote || [];
+      initResult.wrote.push(path.relative(projectRoot, injectResult.reactWire.file));
+      console.log(`[Crank] Injected <Crank /> → ${injectResult.reactWire.file}`);
+    } else if (injectResult.reactWire?.reason === 'already-present') {
+      console.log(`[Crank] <Crank /> already present in ${injectResult.reactWire.file}`);
+    } else if (injectResult.reactWire && injectResult.reactWire.reason !== 'already-present') {
+      console.warn(
+        `[Crank] Inject skipped (${injectResult.reactWire.reason}). Run: npx @ahmednawaz/crank inject`
+      );
     }
+    if (injectResult.installed) {
+      console.log(`[Crank] Installed (${injectResult.installCommand})`);
+    } else if (injectResult.installHint) {
+      console.warn(`[Crank] Install manually: ${injectResult.installHint}`);
+    }
+  }
+
+  if (command === 'init') {
+    const runtime = prepareRuntime(projectRoot, detectEnv);
+    printBanner(projectRoot, detectEnv, initResult, runtime, 'setup', resolved);
+    printSetupNextSteps(detectEnv, runtime, initResult);
+    console.log('Setup complete. Run `npx @ahmednawaz/crank start` to keep the companion up.');
+    return;
   }
 
   const runtime = prepareRuntime(projectRoot, detectEnv);
