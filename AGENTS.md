@@ -103,6 +103,23 @@ See **[REPLIT.md](./REPLIT.md)** and `.crank/replit.md` (URLs after first run).
 
 ---
 
+## Panel injection (Vite vs React)
+
+Crank’s panel is a **script overlay** (`/dev-loader.js` → bookmarklet), **not** a Retune-style React component in the app tree.
+
+| Stack | What to do |
+|-------|------------|
+| **Vite** (React/Vue/Svelte/vanilla) | **Prefer** Vite plugin. `setup` writes `.crank/vite-plugin.cjs` and patches `vite.config` with Vizpatch-style graceful load (works when `pnpm add` fails — uses `packageRoot` from `.crank/config.json`). |
+| **Next.js** | Optional: `import { CrankScript } from '@ahmednawaz/crank/next'` |
+| **React without Vite** | Optional: `import { CrankLoader } from '@ahmednawaz/crank/react'` — injects the same script only |
+| **Any** | Bookmarklet from companion URL |
+
+**Agents must not** invent a fake in-tree `<Crank />` panel UI. If `hasVite: false` but a `vite.config.*` exists nearby, re-run setup from the app root or check `environment.viteConfig` from `doctor`.
+
+Keep companion up via Workflow: `npx @ahmednawaz/crank start`. See `.crank/injection.md` after setup.
+
+---
+
 ## MCP tools (agent pull workflow)
 
 When the user clicks **Agent** on a copy variant or says *“Apply the pending Crank change”*:

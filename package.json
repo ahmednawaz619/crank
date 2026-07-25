@@ -1,6 +1,6 @@
 {
   "name": "@ahmednawaz/crank",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Internal Motive UX copy iteration: select UI text → Glean variants → MCP apply. Cursor, Replit, Claude.",
   "repository": {
     "type": "git",
@@ -14,7 +14,20 @@
   "exports": {
     ".": "./vite.js",
     "./vite": "./vite.js",
+    "./react": "./react.js",
+    "./next": "./next.js",
+    "./webpack": "./webpack.js",
     "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "html-webpack-plugin": ">=5",
+    "next": ">=13",
+    "react": ">=17"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": true },
+    "next": { "optional": true },
+    "html-webpack-plugin": { "optional": true }
   },
   "workspaces": [
     "companion",
@@ -57,6 +70,9 @@
     "skill",
     "panel",
     "vite.js",
+    "react.js",
+    "next.js",
+    "webpack.js",
     ".env.example",
     "AGENTS.md",
     "REPLIT.md",
