@@ -11,15 +11,20 @@ export interface CrankProps {
 
 export declare function resolveCrankCompanionUrl(props?: CrankProps): string;
 export declare function resolveCrankLoaderSrc(props?: CrankProps): string;
+/** Infer https://3344-… from the current Replit preview hostname. */
+export declare function detectReplitCompanionUrl(): string | null;
 
 /**
- * Retune-style mount — injects companion `/dev-loader.js` once. Renders null.
+ * Mount — injects companion loader once. Renders null.
+ *
+ * Prefers same-origin `/@crank/dev-loader.js` (Vite proxy) so the panel works
+ * inside Replit iframe previews; falls back to public companion / localhost.
  *
  *   import { Crank } from '@ahmednawaz/crank/react'
  *   <Crank />
  *
- * Optional: `window.__CRANK_URL__` or `VITE_CRANK_URL` for Replit public companion host.
- * Keep companion running: `npx @ahmednawaz/crank start`
+ * Optional: `window.__CRANK_URL__` or `VITE_CRANK_URL`. Keep companion up:
+ * `npx @ahmednawaz/crank start`
  */
 export declare function Crank(props?: CrankProps): ReactElement | null;
 export declare const CrankLoader: typeof Crank;

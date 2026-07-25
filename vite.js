@@ -2,30 +2,55 @@
 
 /**
  * Vite / Rolldown-vite / Vitest-compatible plugin.
- * Injects Crank into the app during `vite` / `npm run dev` — no React component needed.
  *
- *   // vite.config.ts
+ * - Proxies `/@crank/*` → companion (same-origin; required on Replit iframe previews)
+ * - Optionally injects the loader into index.html (skip when using React `<Crank />`)
+ *
  *   import { crank } from '@ahmednawaz/crank/vite'
- *   // or: import { crank } from 'crank/vite'
- *   export default { plugins: [crank()] }
- *
- * Prefer this for Vite apps (React, Vue, Svelte, vanilla). The panel is a script overlay,
- * not a component in your React tree.
+ *   export default { plugins: [crank()] }                 // Vite-only apps
+ *   export default { plugins: [crank({ inject: false })] } // React + <Crank />
  */
 
-const { resolveCompanionLoaderUrl } = require('./lib/loader-url');
+const { resolveCompanionLoaderUrl, resolveCompanionProxyTarget } = require('./lib/loader-url');
+
+const PROXY_PREFIX = '/@crank';
 
 function crank(options = {}) {
-  const src = resolveCompanionLoaderUrl(options);
+  const inject = options.inject !== false;
+  const target = resolveCompanionProxyTarget(options);
+  const src =
+    options.src ||
+    `${PROXY_PREFIX}/dev-loader.js`;
 
   return {
     name: 'crank-dev-loader',
     apply: 'serve',
+    config() {
+      return {
+        server: {
+          proxy: {
+            [PROXY_PREFIX]: {
+              target,
+              changeOrigin: true,
+              ws: true,
+              rewrite: (p) => p.replace(new RegExp(`^${PROXY_PREFIX}`), '') || '/'
+            }
+          }
+        }
+      };
+    },
     transformIndexHtml(html) {
-      if (String(html).includes('/dev-loader.js') || String(html).includes('crank/dev-loader')) {
+      if (!inject) {
         return html;
       }
-      const tag = `<script src="${src}" defer></script>`;
+      if (
+        String(html).includes('/dev-loader.js') ||
+        String(html).includes('crank/dev-loader') ||
+        String(html).includes('/@crank/')
+      ) {
+        return html;
+      }
+      const tag = `<script src="${src}?t=${Date.now()}" defer></script>`;
       if (html.includes('</head>')) {
         return html.replace('</head>', `  ${tag}\n</head>`);
       }
@@ -37,5 +62,6 @@ function crank(options = {}) {
 module.exports = {
   crank,
   crankDevLoader: crank,
-  resolveCompanionLoaderUrl
+  resolveCompanionLoaderUrl,
+  PROXY_PREFIX
 };

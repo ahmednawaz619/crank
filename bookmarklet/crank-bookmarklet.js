@@ -96,10 +96,15 @@
   function detectCompanionOrigin() {
     try {
       const scripts = document.querySelectorAll(
-        'script[src*="bookmarklet.js"],script[src*="dev-loader.js"]'
+        'script[src*="bookmarklet.js"],script[src*="dev-loader.js"],script[data-crank-loader="1"]'
       );
       for (const s of scripts) {
-        return new URL(s.src, location.href).origin;
+        const u = new URL(s.src, location.href);
+        // Vite same-origin proxy: /@crank/dev-loader.js → companion base is origin+/@crank
+        if (u.pathname.indexOf('/@crank/') === 0 || u.pathname === '/@crank') {
+          return u.origin + '/@crank';
+        }
+        return u.origin;
       }
     } catch (_) {}
     return null;
@@ -2256,14 +2261,47 @@
     document.removeEventListener('keydown', onKey, true);
   }
 
+  function showReopenChip() {
+    if (document.getElementById('vp-crank-reopen')) {
+      return;
+    }
+    const chip = document.createElement('button');
+    chip.id = 'vp-crank-reopen';
+    chip.type = 'button';
+    chip.textContent = 'Crank';
+    chip.setAttribute('aria-label', 'Reopen Crank panel');
+    chip.style.cssText =
+      'position:fixed;bottom:16px;right:16px;z-index:2147483646;padding:8px 12px;' +
+      'border-radius:999px;border:1px solid rgba(0,0,0,.12);background:#0f766e;color:#fff;' +
+      'font:600 12px/1.2 system-ui,sans-serif;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.18);';
+    chip.addEventListener('click', function () {
+      chip.remove();
+      window.__CRANK_LOADER__ = false;
+      window.__crankActive = false;
+      const s = document.createElement('script');
+      s.src = COMPANION_HTTP + '/bookmarklet.js?t=' + Date.now();
+      s.async = true;
+      s.dataset.crankLoader = '1';
+      document.documentElement.appendChild(s);
+    });
+    document.documentElement.appendChild(chip);
+  }
+
   function teardown() {
     stopSelect();
     restoreOriginal();
     if (socket) socket.close();
-    panel.remove();
-    highlight.remove();
+    if (panel && panel.parentNode) panel.remove();
+    if (highlight && highlight.parentNode) highlight.remove();
     window.__crankActive = false;
     window.__crankTeardown = null;
+    window.__CRANK_LOADER__ = false;
+    try {
+      document.querySelectorAll('script[data-crank-loader="1"]').forEach(function (el) {
+        el.remove();
+      });
+    } catch (_) {}
+    showReopenChip();
   }
 
   window.__crankTeardown = teardown;

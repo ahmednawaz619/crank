@@ -58,7 +58,9 @@ Visual copy tooling that persists text changes to source via the coding agent (M
 - Secrets: `CRANK_TEAM_TOKEN`
 - Workflow Run: `npx @ahmednawaz/crank start`
 - Ports: **3344** (panel), **3345** (`/mcp`)
-- If preview is not localhost: `window.__CRANK_URL__` or `VITE_CRANK_URL` = public `https://3344-…` URL
+- Panel loads via same-origin Vite proxy `/@crank/*` (setup registers `crank({ inject: false })`). Restart **Vite** after setup.
+- Fallback: `window.__CRANK_URL__` / `VITE_CRANK_URL` = public `https://3344-…` URL
+- After closing the panel (×), a **Crank** chip appears bottom-right to reopen.
 
 ## Apply workflow
 
