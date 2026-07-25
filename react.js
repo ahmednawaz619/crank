@@ -1,56 +1,61 @@
 'use strict';
 
 /**
- * Optional React adapter for non-Vite React apps (CRA, custom webpack, etc.).
- *
- * This is NOT a Retune-style UI component. It only injects the same /dev-loader.js
- * script the Vite plugin uses. Prefer `@ahmednawaz/crank/vite` when the app uses Vite.
- *
- *   import { CrankLoader } from '@ahmednawaz/crank/react'
- *   // in App / root layout (client-only):
- *   <CrankLoader />
- *
- * peerDependency: react >= 17
+ * CJS build of @ahmednawaz/crank/react (browser-safe, no Node/fs).
+ * Vite / modern apps should import the ESM build via package exports "import" condition.
  */
-
-const { resolveCompanionLoaderUrl } = require('./lib/loader-url');
 
 function getReact() {
   try {
-    // eslint-disable-next-line import/no-extraneous-dependencies
     return require('react');
   } catch {
     throw new Error(
-      '@ahmednawaz/crank/react requires react as a peer dependency. Prefer the Vite plugin when possible: import { crank } from "@ahmednawaz/crank/vite".'
+      '@ahmednawaz/crank/react requires react as a peer dependency (npm i react / pnpm add react).'
     );
   }
 }
 
-/**
- * Injects Crank's companion loader once on the client. Renders null.
- * @param {{ src?: string, companionUrl?: string, port?: string|number, host?: string }} props
- */
-function CrankLoader(props) {
+function resolveCrankCompanionUrl(props) {
+  props = props || {};
+  if (typeof window !== 'undefined' && window.__CRANK_URL__) {
+    return String(window.__CRANK_URL__).replace(/\/$/, '');
+  }
+  if (props.companionUrl) {
+    return String(props.companionUrl).replace(/\/$/, '');
+  }
+  if (props.url) {
+    return String(props.url).replace(/\/$/, '');
+  }
+  return 'http://localhost:3344';
+}
+
+function resolveCrankLoaderSrc(props) {
+  props = props || {};
+  if (props.src) {
+    return String(props.src);
+  }
+  return `${resolveCrankCompanionUrl(props)}/dev-loader.js`;
+}
+
+function Crank(props) {
   const React = getReact();
-  const src = resolveCompanionLoaderUrl(props || {});
+  props = props || {};
+  const src = resolveCrankLoaderSrc(props);
 
   React.useEffect(() => {
     if (typeof document === 'undefined') {
       return undefined;
     }
-    if (window.__CRANK_LOADER__) {
+    if (document.querySelector('script[data-crank-loader="1"]')) {
       return undefined;
     }
-    window.__CRANK_LOADER__ = true;
-
-    const existing = document.querySelector('script[data-crank-loader="1"]');
-    if (existing) {
+    if (window.__CRANK_LOADER__ && document.getElementById('vp-shell')) {
       return undefined;
     }
 
     const script = document.createElement('script');
-    script.src = src;
-    script.defer = true;
+    script.src = src.indexOf('?') >= 0 ? src : src + '?t=' + Date.now();
+    script.async = true;
     script.dataset.crankLoader = '1';
     document.documentElement.appendChild(script);
     return undefined;
@@ -59,11 +64,10 @@ function CrankLoader(props) {
   return null;
 }
 
-/** Alias — still only a script injector, not an in-tree panel UI. */
-const Crank = CrankLoader;
-
 module.exports = {
-  CrankLoader,
   Crank,
-  resolveCompanionLoaderUrl
+  CrankLoader: Crank,
+  resolveCrankCompanionUrl,
+  resolveCrankLoaderSrc,
+  default: Crank
 };

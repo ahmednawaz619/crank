@@ -102,19 +102,34 @@ No external sibling tool required. Crank ships:
 
 Optional: `CRANK_ASSET_ROOT` overrides where packaged UI assets are loaded from (defaults to this install).
 
-### Panel injection (Vite first)
+### Panel injection (Retune-style React)
 
-The panel is a **script overlay**, not a Retune-style React component.
+**Preferred** — install and mount like Retune:
+
+```bash
+pnpm add -D @ahmednawaz/crank
+```
+
+```tsx
+import { Crank } from '@ahmednawaz/crank/react'
+
+createRoot(document.getElementById('root')!).render(
+  <>
+    <App />
+    <Crank />
+  </>
+)
+```
+
+Companion: `npx @ahmednawaz/crank start`  
+Replit public URL: `window.__CRANK_URL__` or `<Crank companionUrl="https://3344-….replit.dev" />` or `VITE_CRANK_URL`.
 
 | Stack | Integration |
 |-------|-------------|
-| **Vite** | `setup` patches `vite.config` with Vizpatch-style graceful load via `.crank/vite-plugin.cjs` (resolves from `packageRoot` / npx cache when `pnpm add` fails) |
-| **Next.js** | `import { CrankScript } from '@ahmednawaz/crank/next'` |
-| **React (no Vite)** | `import { CrankLoader } from '@ahmednawaz/crank/react'` — script injector only |
-| **Webpack** | `crankWebpackPlugin()` from `@ahmednawaz/crank/webpack` |
+| **React** | `<Crank />` — bundled by Vite, **no plugin** |
+| **Next.js** | `import { Crank } from '@ahmednawaz/crank/next'` |
+| **Non-React Vite** | Optional `import { crank } from '@ahmednawaz/crank/vite'` |
 | **Fallback** | Companion bookmarklet |
-
-Keep companion running (`npx @ahmednawaz/crank start`). See `.crank/injection.md` after setup.
 
 Useful variants:
 

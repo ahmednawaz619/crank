@@ -103,20 +103,35 @@ See **[REPLIT.md](./REPLIT.md)** and `.crank/replit.md` (URLs after first run).
 
 ---
 
-## Panel injection (Vite vs React)
+## Panel injection (Retune pattern)
 
-Crank’s panel is a **script overlay** (`/dev-loader.js` → bookmarklet), **not** a Retune-style React component in the app tree.
+**Preferred for React apps** — install the package and mount once:
 
-| Stack | What to do |
-|-------|------------|
-| **Vite** (React/Vue/Svelte/vanilla) | **Prefer** Vite plugin. `setup` writes `.crank/vite-plugin.cjs` and patches `vite.config` with Vizpatch-style graceful load (works when `pnpm add` fails — uses `packageRoot` from `.crank/config.json`). |
-| **Next.js** | Optional: `import { CrankScript } from '@ahmednawaz/crank/next'` |
-| **React without Vite** | Optional: `import { CrankLoader } from '@ahmednawaz/crank/react'` — injects the same script only |
+```bash
+pnpm add -D @ahmednawaz/crank
+# or: npm i -D @ahmednawaz/crank
+```
+
+```tsx
+import { Crank } from '@ahmednawaz/crank/react'
+
+// main.tsx
+<App />
+<Crank />
+```
+
+Keep companion running: `npx @ahmednawaz/crank start`
+
+On Replit set public companion URL if needed: `window.__CRANK_URL__`, `<Crank companionUrl="…" />`, or `VITE_CRANK_URL`.
+
+| Stack | Integration |
+|-------|-------------|
+| **React + Vite** | `<Crank />` from `@ahmednawaz/crank/react` (bundled like Retune — **no Vite plugin**) |
+| **Next.js** | `<Crank />` from `@ahmednawaz/crank/next` |
+| **Vue / Svelte / vanilla Vite** | Optional `@ahmednawaz/crank/vite` plugin |
 | **Any** | Bookmarklet from companion URL |
 
-**Agents must not** invent a fake in-tree `<Crank />` panel UI. If `hasVite: false` but a `vite.config.*` exists nearby, re-run setup from the app root or check `environment.viteConfig` from `doctor`.
-
-Keep companion up via Workflow: `npx @ahmednawaz/crank start`. See `.crank/injection.md` after setup.
+Agents: do **not** invent Vite-plugin path workarounds for React apps. See `.crank/react-mount.md` / `.crank/injection.md` after setup.
 
 ---
 

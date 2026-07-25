@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * Injected by Vite plugin (or bookmarklet fallback).
- * Loads the Crank panel from the local companion.
+ * Injected by <Crank /> (React) or the optional Vite plugin / bookmarklet.
+ * Loads the Crank panel from the companion that served this script.
  */
 (function () {
   if (window.__CRANK_LOADER__) {

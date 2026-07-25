@@ -1,63 +1,53 @@
 'use strict';
 
 /**
- * Optional Next.js adapter — injects Crank via next/script (App Router or Pages).
- *
- * Prefer Vite plugin for Vite apps. Use this for Next.js when there is no vite.config.
- *
- *   // app/layout.tsx (or a client layout section)
- *   import { CrankScript } from '@ahmednawaz/crank/next'
- *   <CrankScript />
- *
- * peerDependencies: react, next
+ * CJS Next adapter — prefer ESM `next.mjs` via package exports.
  */
 
-const { resolveCompanionLoaderUrl } = require('./lib/loader-url');
-const { CrankLoader } = require('./react');
+const {
+  Crank: CrankEffect,
+  resolveCrankLoaderSrc,
+  resolveCrankCompanionUrl
+} = require('./react.js');
 
 function getReact() {
   try {
     return require('react');
   } catch {
-    throw new Error(
-      '@ahmednawaz/crank/next requires react. Prefer @ahmednawaz/crank/vite for Vite apps.'
-    );
+    throw new Error('@ahmednawaz/crank/next requires react');
   }
 }
 
-function getNextScript() {
-  try {
-    return require('next/script');
-  } catch {
-    return null;
-  }
-}
-
-/**
- * @param {{ src?: string, companionUrl?: string, strategy?: string }} props
- */
-function CrankScript(props) {
+function Crank(props) {
   const React = getReact();
-  const NextScript = getNextScript();
-  const src = resolveCompanionLoaderUrl(props || {});
-  const strategy = (props && props.strategy) || 'afterInteractive';
+  props = props || {};
+  const src = resolveCrankLoaderSrc(props);
+  const strategy = props.strategy || 'afterInteractive';
 
-  if (NextScript) {
-    const Script = NextScript.default || NextScript;
+  let Script = null;
+  try {
+    const mod = require('next/script');
+    Script = mod.default || mod;
+  } catch {
+    Script = null;
+  }
+
+  if (Script) {
     return React.createElement(Script, {
-      src,
+      src: src.indexOf('?') >= 0 ? src : src + '?t=' + Date.now(),
       strategy,
       'data-crank-loader': '1'
     });
   }
 
-  // Fallback when next/script is unavailable (tests / non-Next bundlers).
-  return React.createElement(CrankLoader, props || {});
+  return React.createElement(CrankEffect, props);
 }
 
 module.exports = {
-  CrankScript,
-  CrankLoader,
-  Crank: CrankScript,
-  resolveCompanionLoaderUrl
+  Crank,
+  CrankScript: Crank,
+  CrankLoader: Crank,
+  resolveCrankLoaderSrc,
+  resolveCrankCompanionUrl,
+  default: Crank
 };

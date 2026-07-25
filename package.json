@@ -1,6 +1,6 @@
 {
   "name": "@ahmednawaz/crank",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Internal Motive UX copy iteration: select UI text → Glean variants → MCP apply. Cursor, Replit, Claude.",
   "repository": {
     "type": "git",
@@ -10,12 +10,28 @@
   "bin": {
     "crank": "bin/crank.js"
   },
-  "main": "vite.js",
+  "main": "./react.js",
+  "module": "./react.mjs",
+  "types": "./react.d.ts",
   "exports": {
-    ".": "./vite.js",
+    ".": {
+      "types": "./react.d.ts",
+      "import": "./react.mjs",
+      "require": "./react.js",
+      "default": "./react.mjs"
+    },
+    "./react": {
+      "types": "./react.d.ts",
+      "import": "./react.mjs",
+      "require": "./react.js",
+      "default": "./react.mjs"
+    },
+    "./next": {
+      "import": "./next.mjs",
+      "require": "./next.js",
+      "default": "./next.mjs"
+    },
     "./vite": "./vite.js",
-    "./react": "./react.js",
-    "./next": "./next.js",
     "./webpack": "./webpack.js",
     "./package.json": "./package.json"
   },
@@ -25,9 +41,15 @@
     "react": ">=17"
   },
   "peerDependenciesMeta": {
-    "react": { "optional": true },
-    "next": { "optional": true },
-    "html-webpack-plugin": { "optional": true }
+    "react": {
+      "optional": true
+    },
+    "next": {
+      "optional": true
+    },
+    "html-webpack-plugin": {
+      "optional": true
+    }
   },
   "workspaces": [
     "companion",
@@ -71,7 +93,10 @@
     "panel",
     "vite.js",
     "react.js",
+    "react.mjs",
+    "react.d.ts",
     "next.js",
+    "next.mjs",
     "webpack.js",
     ".env.example",
     "AGENTS.md",
@@ -87,6 +112,7 @@
     "glean",
     "mcp",
     "copy",
-    "ux-writing"
+    "ux-writing",
+    "react"
   ]
 }
