@@ -25,8 +25,8 @@ Alternatively the user can set `CRANK_TEAM_TOKEN` in Replit Secrets or shell bef
 2. If team auth is required and tools fail, ask for the team token (see above).
 3. Run in the terminal from project root:
    ```bash
-   npx @ahmednawaz619/crank setup   # once
-   npx @ahmednawaz619/crank
+   npx @ahmednawaz/crank setup   # once
+   npx @ahmednawaz/crank
    ```
 
 ## Apply workflow

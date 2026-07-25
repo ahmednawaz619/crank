@@ -1,5 +1,5 @@
 {
-  "name": "@ahmednawaz619/crank",
+  "name": "@ahmednawaz/crank",
   "version": "0.1.2",
   "description": "One-command copy iteration: select UI text → Glean variants → MCP apply. Works in Cursor, VS Code, Claude, and Replit.",
   "bin": {

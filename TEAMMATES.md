@@ -3,8 +3,8 @@
 From **any app repo** — no clone, no GitHub invite, no API key:
 
 ```bash
-npx @ahmednawaz619/crank setup
-npx @ahmednawaz619/crank
+npx @ahmednawaz/crank setup
+npx @ahmednawaz/crank
 ```
 
 Open the app → select copy → **Get options**.

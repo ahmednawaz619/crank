@@ -7,7 +7,7 @@ Everything below that says **you** must be done on your machine or in Replit. Ev
 ## Already done (in the repo)
 
 - GitHub: https://github.com/ahmednawaz619/crank (public)
-- Package name: `@ahmednawaz619/crank@0.1.2`
+- Package name: `@ahmednawaz/crank@0.1.2`
 - Team passphrase lock (`CRANK_TEAM_TOKEN`) on panel + MCP + WebSocket
 - Agent asks user for token via `crank_verify_team_token`
 - Auto-detect project root (no paths in Replit / Cursor)
@@ -33,7 +33,7 @@ cd ~/Downloads/crank
 npm run publish:team
 ```
 
-Publishes `@ahmednawaz619/crank@0.1.2` with bundled Glean key (not team token).
+Publishes `@ahmednawaz/crank@0.1.2` with bundled Glean key (not team token).
 
 ---
 
@@ -41,8 +41,8 @@ Publishes `@ahmednawaz619/crank@0.1.2` with bundled Glean key (not team token).
 
 ```bash
 cd /path/to/your-app
-CRANK_TEAM_TOKEN=your-team-passphrase npx @ahmednawaz619/crank setup
-CRANK_TEAM_TOKEN=your-team-passphrase npx @ahmednawaz619/crank
+CRANK_TEAM_TOKEN=your-team-passphrase npx @ahmednawaz/crank setup
+CRANK_TEAM_TOKEN=your-team-passphrase npx @ahmednawaz/crank
 ```
 
 Panel prompts for token if omitted — paste the shared phrase.
@@ -64,13 +64,13 @@ Add:
 ### 3b. Shell — once
 
 ```bash
-npx @ahmednawaz619/crank setup
+npx @ahmednawaz/crank setup
 ```
 
 ### 3c. Shell or Run — keep running
 
 ```bash
-npx @ahmednawaz619/crank
+npx @ahmednawaz/crank
 ```
 
 Banner should say `Team lock: ON`.
@@ -78,7 +78,7 @@ Banner should say `Team lock: ON`.
 ### 3d. Replit Agent MCP — once
 
 ```bash
-npx @ahmednawaz619/crank doctor
+npx @ahmednawaz/crank doctor
 ```
 
 Add **`runtime.mcp.endpoint`** in Agent → Integrations → MCP Servers.
@@ -97,8 +97,8 @@ Share two things internally:
 
 1. **Commands:**
    ```bash
-   npx @ahmednawaz619/crank setup
-   npx @ahmednawaz619/crank
+   npx @ahmednawaz/crank setup
+   npx @ahmednawaz/crank
    ```
 2. **Team token:** the `CRANK_TEAM_TOKEN` phrase (and add it to Replit Secrets if using Replit)
 
@@ -123,6 +123,6 @@ They do **not** need Glean keys or GitHub access.
 ```
 YOU:  CRANK_TEAM_TOKEN in .env → npm login → npm run publish:team
 YOU:  share token with team (Slack)
-TEAM: Replit Secrets CRANK_TEAM_TOKEN + npx @ahmednawaz619/crank setup && npx @ahmednawaz619/crank
+TEAM: Replit Secrets CRANK_TEAM_TOKEN + npx @ahmednawaz/crank setup && npx @ahmednawaz/crank
 AGENT: ask user for team token → crank_verify_team_token → other tools
 ```
