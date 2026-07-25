@@ -9,6 +9,10 @@ npx @ahmednawaz619/crank
 
 Open the app → select copy → **Get options**.
 
+**Replit:** same commands in the Repl Shell — project path is auto-detected. See [SETUP.md](./SETUP.md) for MCP Integrations step.
+
+**Full checklist:** [SETUP.md](./SETUP.md)
+
 ---
 
 **Maintainer (you) — one time:**
