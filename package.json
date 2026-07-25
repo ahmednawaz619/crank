@@ -1,6 +1,6 @@
 {
   "name": "@ahmednawaz619/crank",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "One-command copy iteration: select UI text → Glean variants → MCP apply. Works in Cursor, VS Code, Claude, and Replit.",
   "bin": {
     "crank": "bin/crank.js"

@@ -269,6 +269,11 @@ function printBanner(projectRoot, detectEnv, initResult, runtime, modeLabel) {
   if (runtime?.mcp?.mode === 'http' && runtime?.mcp?.endpoint) {
     console.log(`  MCP (HTTP): ${runtime.mcp.endpoint}`);
   }
+  if (process.env.CRANK_TEAM_TOKEN) {
+    console.log('  Team lock: ON (CRANK_TEAM_TOKEN set)');
+  } else {
+    console.log('  Team lock: OFF — set CRANK_TEAM_TOKEN in .env to require a passphrase');
+  }
   if (modeLabel) {
     console.log(`  Mode:       ${modeLabel}`);
   }

@@ -78,6 +78,51 @@ const app = express();
 app.use(cors({ origin: true }));
 app.use(express.json({ limit: '2mb' }));
 
+const {
+  teamAuthMiddleware,
+  getAuthStatus,
+  extractTeamToken,
+  isTeamTokenValid,
+  teamAuthRequired
+} = require('../lib/team-auth');
+
+app.get('/api/auth/status', (_req, res) => {
+  res.json({ ok: true, ...getAuthStatus() });
+});
+
+app.post('/api/auth/verify', (req, res) => {
+  const token = req.body?.token || extractTeamToken(req);
+  if (!teamAuthRequired()) {
+    res.json({ ok: true, authenticated: true, teamAuthRequired: false });
+    return;
+  }
+  if (isTeamTokenValid(token)) {
+    res.json({ ok: true, authenticated: true, teamAuthRequired: true });
+    return;
+  }
+  res.status(401).json({
+    ok: false,
+    code: 'TEAM_TOKEN_INVALID',
+    error: 'Invalid Crank team token'
+  });
+});
+
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/')) {
+    next();
+    return;
+  }
+  if (req.path === '/api/auth/status' && req.method === 'GET') {
+    next();
+    return;
+  }
+  if (req.path === '/api/auth/verify' && req.method === 'POST') {
+    next();
+    return;
+  }
+  teamAuthMiddleware(req, res, next);
+});
+
 /** @type {Set<import('ws').WebSocket>} */
 const browserClients = new Set();
 
@@ -153,6 +198,7 @@ app.get('/health', (_req, res) => {
     host: HOST,
     publicUrl: publicCompanionUrl(_req),
     projectRoot: PROJECT_ROOT,
+    ...getAuthStatus(),
     activeSessionId: store.getActiveSession()?.id || null,
     gleanStub: String(process.env.GLEAN_STUB || 'true').toLowerCase() !== 'false',
     vizpatchRoot: resolveVizpatchRoot(),
@@ -658,6 +704,7 @@ app.get('/api/environment', (req, res) => {
       startCommand: 'npx crank',
       setupCommand: 'npx crank setup'
     },
+    auth: getAuthStatus(),
     pending: agentQueue.getAgentQueueStatus()
   });
 });
@@ -788,9 +835,34 @@ app.post('/api/apply-nodes', (req, res) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server, path: '/ws' });
+const wss = new WebSocket.Server({
+  server,
+  path: '/ws',
+  verifyClient(info, cb) {
+    if (!teamAuthRequired()) {
+      cb(true);
+      return;
+    }
+    cb(isTeamTokenValid(extractTeamToken(info.req)));
+  }
+});
 
-wss.on('connection', (socket) => {
+wss.on('connection', (socket, req) => {
+  if (teamAuthRequired() && !isTeamTokenValid(extractTeamToken(req))) {
+    try {
+      socket.send(
+        JSON.stringify({
+          type: 'ERROR',
+          code: 'TEAM_TOKEN_REQUIRED',
+          error: 'Crank team token required'
+        })
+      );
+    } catch {
+      // ignore
+    }
+    socket.close(4401, 'Team token required');
+    return;
+  }
   browserClients.add(socket);
   socket.send(
     JSON.stringify({

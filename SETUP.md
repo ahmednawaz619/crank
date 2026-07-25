@@ -7,124 +7,109 @@ Everything below that says **you** must be done on your machine or in Replit. Ev
 ## Already done (in the repo)
 
 - GitHub: https://github.com/ahmednawaz619/crank (public)
-- Package name: `@ahmednawaz619/crank`
+- Package name: `@ahmednawaz619/crank@0.1.1`
+- Team passphrase lock (`CRANK_TEAM_TOKEN`) on panel + MCP + WebSocket
+- Agent asks user for token via `crank_verify_team_token`
 - Auto-detect project root (no paths in Replit / Cursor)
-- Replit: HTTP MCP + companion + dev in one command
-- Shared Glean key bundling for npm (`team.env` at publish time)
-- Agent skill + `crank_get_environment` MCP tool
+- Shared Glean key bundling for npm (`team.env` at publish — **not** the team token)
+
+---
+
+## YOU — Step 0: Pick a team passphrase (once)
+
+Choose a shared phrase only your team knows, e.g. `motive-crank-2026`.
+
+Add it to your Crank `.env` (never commit):
+
+```bash
+# /Users/ahmed.nawaz/Downloads/vizcopy/.env
+CRANK_TEAM_TOKEN=motive-crank-2026
+```
+
+Share this phrase with teammates via Slack / 1Password — **not** in GitHub or npm.
+
+When `CRANK_TEAM_TOKEN` is set, the companion requires it for the panel and MCP. The npm package does **not** include this token.
 
 ---
 
 ## YOU — Step 1: Publish to npm (once, ~2 min)
 
-On your Mac, in Terminal:
-
 ```bash
 npm login
-```
-
-Use your npmjs.com account (create one free at https://www.npmjs.com/signup if needed).
-
-Then:
-
-```bash
 cd /Users/ahmed.nawaz/Downloads/vizcopy
 npm run publish:team
 ```
 
-You should see `@ahmednawaz619/crank@0.1.0` published.
-
-**This is required** before anyone (including Replit) can run `npx @ahmednawaz619/crank`.
+Publishes `@ahmednawaz619/crank@0.1.1` with bundled Glean key (not team token).
 
 ---
 
-## YOU — Step 2: Test on your laptop (optional, ~3 min)
-
-In any app repo:
+## YOU — Step 2: Test locally (optional)
 
 ```bash
 cd /path/to/your-app
-npx @ahmednawaz619/crank setup
-npx @ahmednawaz619/crank
+CRANK_TEAM_TOKEN=motive-crank-2026 npx @ahmednawaz619/crank setup
+CRANK_TEAM_TOKEN=motive-crank-2026 npx @ahmednawaz619/crank
 ```
 
-Open the app in the browser → select copy → **Get options**.
-
-Reload MCP in Cursor after the first `setup`.
+Panel prompts for token if omitted — paste the shared phrase.
 
 ---
 
-## YOU — Step 3: Test in Replit (~5 min)
+## YOU — Step 3: Test in Replit
 
-### 3a. Open your app Repl
+### 3a. Replit Secrets (once per Repl)
 
-Use a Repl that already has your GitHub project (the app you want to edit copy in).
+Add:
 
-### 3b. Shell — run once
+| Key | Value |
+|-----|--------|
+| `CRANK_TEAM_TOKEN` | your shared phrase (same as Step 0) |
+
+(Glean key comes from npm — no `GLEAN_API_KEY` needed if you published with `publish:team`.)
+
+### 3b. Shell — once
 
 ```bash
 npx @ahmednawaz619/crank setup
 ```
 
-### 3c. Shell or Run — keep this running
+### 3c. Shell or Run — keep running
 
 ```bash
 npx @ahmednawaz619/crank
 ```
 
-Leave it running. It starts companion + HTTP MCP + your dev server.
+Banner should say `Team lock: ON`.
 
-### 3d. Register Replit Agent MCP (once per Repl)
-
-In another Shell tab (while crank is running):
+### 3d. Replit Agent MCP — once
 
 ```bash
 npx @ahmednawaz619/crank doctor
 ```
 
-Find **`runtime.mcp.endpoint`** — something like:
+Add **`runtime.mcp.endpoint`** in Agent → Integrations → MCP Servers.
 
-`https://3345-YOUR-REPL-NAME.YOUR-USER.repl.co/mcp`
+### 3e. Test panel + agent
 
-Then in Replit:
-
-1. **Agent** (left sidebar) → **Integrations** → **MCP Servers**
-2. **Add custom MCP server**
-3. URL = that `/mcp` endpoint
-4. Save
-
-### 3e. Test the panel
-
-1. Open **Webview** (your app preview).
-2. Crank panel should load (Vite apps) or open the companion URL from `doctor` and use the bookmarklet.
-3. Select a `div` → **Get options** → pick a variant → **Apply** or **Agent**.
-
-### 3f. Test Replit Agent
-
-In Agent chat, paste:
-
-```text
-Apply the pending Crank change
-```
-
-(After you clicked **Agent** on a variant in the panel.)
-
-Or ask:
-
-```text
-Call crank_get_environment and tell me the project root and MCP URL.
-```
+1. Webview → select copy → **Get options** (enter team token if prompted)
+2. Agent chat: *“What is the Crank team token?”* → you paste the phrase → agent calls `crank_verify_team_token`
+3. Then: *Apply the pending Crank change*
 
 ---
 
-## What teammates run (after you publish)
+## What teammates run
 
-Same as Replit — no paths, no keys, no clone:
+Share two things internally:
 
-```bash
-npx @ahmednawaz619/crank setup   # once per repo
-npx @ahmednawaz619/crank         # when working
-```
+1. **Commands:**
+   ```bash
+   npx @ahmednawaz619/crank setup
+   npx @ahmednawaz619/crank
+   ```
+2. **Team token:** the `CRANK_TEAM_TOKEN` phrase (and add it to Replit Secrets if using Replit)
+
+They do **not** need Glean keys or GitHub access.
 
 ---
 
@@ -132,18 +117,19 @@ npx @ahmednawaz619/crank         # when working
 
 | Problem | Fix |
 |---------|-----|
-| `404` on `npx @ahmednawaz619/crank` | You haven’t run Step 1 (`npm run publish:team`) |
-| Glean returns stub / no real options | Publish with `publish:team` (bundles your `.env` key) |
-| Replit Agent can’t use tools | Add MCP URL from `doctor` in Integrations |
-| Panel doesn’t appear | Keep `npx crank` running; check Webview is on dev server URL |
-| Wrong project root | Agent runs `crank_get_environment`; should match Repl cwd |
+| `404` on npx | Run Step 1 (`npm run publish:team`) |
+| `TEAM_TOKEN_REQUIRED` | Set `CRANK_TEAM_TOKEN` in Replit Secrets / shell, or tell agent the phrase |
+| Team lock OFF in banner | Start crank with `CRANK_TEAM_TOKEN` in environment |
+| Glean stub only | Run `publish:team` with Glean key in your `.env` |
+| Agent MCP fails | Register MCP URL from `doctor` |
 
 ---
 
-## Order of operations (summary)
+## Summary
 
 ```
-YOU:  npm login → npm run publish:team
-YOU:  Replit → setup → crank → doctor → add MCP URL → test panel → test agent
-TEAM: npx @ahmednawaz619/crank setup && npx @ahmednawaz619/crank
+YOU:  pick CRANK_TEAM_TOKEN → add to .env → npm login → npm run publish:team
+YOU:  share token with team (Slack)
+TEAM: Replit Secrets CRANK_TEAM_TOKEN + npx @ahmednawaz619/crank setup && npx @ahmednawaz619/crank
+AGENT: ask user for team token → crank_verify_team_token → other tools
 ```

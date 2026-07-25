@@ -21,6 +21,77 @@
     detectCompanionOrigin() ||
     'http://127.0.0.1:3344';
   const COMPANION_WS = COMPANION_HTTP.replace(/^http/i, 'ws') + '/ws';
+  const TEAM_TOKEN_KEY = 'crank:teamToken';
+
+  function getTeamToken() {
+    try {
+      return localStorage.getItem(TEAM_TOKEN_KEY) || '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function setTeamToken(value) {
+    try {
+      localStorage.setItem(TEAM_TOKEN_KEY, String(value || '').trim());
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  async function ensureTeamToken() {
+    const status = await fetch(COMPANION_HTTP + '/api/auth/status').then(function (r) {
+      return r.json();
+    }).catch(function () {
+      return { teamAuthRequired: false };
+    });
+    if (!status.teamAuthRequired) {
+      return true;
+    }
+    if (getTeamToken()) {
+      return true;
+    }
+    const entered = window.prompt(
+      status.hint ||
+        'Enter the Crank team token (ask your team lead):'
+    );
+    if (!entered) {
+      return false;
+    }
+    const verify = await fetch(COMPANION_HTTP + '/api/auth/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: entered.trim() })
+    }).then(function (r) {
+      return r.json();
+    }).catch(function () {
+      return { ok: false };
+    });
+    if (!verify.ok) {
+      window.alert('Invalid Crank team token');
+      return false;
+    }
+    setTeamToken(entered.trim());
+    return true;
+  }
+
+  function authHeaders(extra) {
+    const h = extra || {};
+    const token = getTeamToken();
+    if (token) {
+      h['X-Crank-Team-Token'] = token;
+    }
+    return h;
+  }
+
+  function wsUrlWithToken() {
+    const token = getTeamToken();
+    if (!token) {
+      return COMPANION_WS;
+    }
+    const sep = COMPANION_WS.indexOf('?') >= 0 ? '&' : '?';
+    return COMPANION_WS + sep + 'teamToken=' + encodeURIComponent(token);
+  }
 
   function detectCompanionOrigin() {
     try {
@@ -501,7 +572,8 @@
     } catch (_) {
       try {
         const res = await fetch(COMPANION_HTTP + '/api/agent-status', {
-          method: 'GET'
+          method: 'GET',
+          headers: authHeaders()
         });
         return await res.json();
       } catch (__) {
@@ -517,7 +589,7 @@
       try {
         const res = await fetch(
           COMPANION_HTTP + '/api/agent-run/' + encodeURIComponent(jobId),
-          { method: 'GET' }
+          { method: 'GET', headers: authHeaders() }
         );
         const data = await res.json();
         const job = data && data.job;
@@ -548,7 +620,7 @@
       };
       const res = await fetch(COMPANION_HTTP + '/api/agent-run', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body)
       });
       const data = await res.json().catch(function () {
@@ -963,7 +1035,7 @@
 
   function connectWs() {
     try {
-      socket = new WebSocket(COMPANION_WS);
+      socket = new WebSocket(wsUrlWithToken());
       socket.addEventListener('open', function () {
         setStatus('Connected to companion');
       });
@@ -1099,9 +1171,9 @@
     let res;
     try {
       res = await fetch(COMPANION_HTTP + path, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        method: opts.method || 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: opts.method === 'GET' ? undefined : JSON.stringify(body),
         signal: controller ? controller.signal : undefined
       });
     } catch (err) {
@@ -1129,6 +1201,13 @@
       data = {};
     }
     if (!res.ok) {
+      if (res.status === 401 && (data.code === 'TEAM_TOKEN_REQUIRED' || data.code === 'TEAM_TOKEN_INVALID')) {
+        setTeamToken('');
+        const ok = await ensureTeamToken();
+        if (ok) {
+          return postJson(path, body, options);
+        }
+      }
       const err = new Error(data.error || 'HTTP ' + res.status);
       err.status = res.status;
       err.data = data;
@@ -2051,7 +2130,7 @@
       try {
         const resp = await fetch(
           COMPANION_HTTP + '/api/glean-progress?sessionId=' + encodeURIComponent(sessionId),
-          { cache: 'no-store' }
+          { cache: 'no-store', headers: authHeaders() }
         );
         const data = await resp.json();
         if (data.ok && data.progress && gleanActiveEpoch === epoch) {
@@ -2194,6 +2273,11 @@
     await loadScript(COMPANION_HTTP + '/ui/crank-ui-helpers.js?v=' + Date.now());
     await loadScript(COMPANION_HTTP + '/ui/text-source.js?v=' + Date.now());
     buildPanelShell();
+    const authed = await ensureTeamToken();
+    if (!authed) {
+      setStatus('Crank team token required — reload after you have it');
+      return;
+    }
     connectWs();
     setStatus('Ready — companion ' + COMPANION_HTTP);
   }

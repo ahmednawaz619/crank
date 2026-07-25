@@ -9,6 +9,17 @@ const COMPANION_URL = (
   'http://127.0.0.1:3344'
 ).replace(/\/$/, '');
 
+const TEAM_TOKEN =
+  process.env.CRANK_TEAM_TOKEN || process.env.VIZCOPY_TEAM_TOKEN || '';
+
+const teamTokenSchema = {
+  teamToken: {
+    type: 'string',
+    description:
+      'Shared Crank team passphrase. Ask the user if tools return TEAM_TOKEN_REQUIRED. Optional when CRANK_TEAM_TOKEN is set in MCP env.'
+  }
+};
+
 /** Glean Robot Content Designer often takes 90–140s; allow up to 5 min. */
 const GLEAN_VARIANTS_TIMEOUT_MS = Number(
   process.env.CRANK_VARIANTS_TIMEOUT_MS ||
@@ -26,7 +37,8 @@ const LEGACY_TOOL_ALIASES = {
 };
 
 async function companionFetch(pathname, options = {}) {
-  const { timeoutMs, ...fetchOpts } = options;
+  const { timeoutMs, teamToken, ...fetchOpts } = options;
+  const token = teamToken || TEAM_TOKEN || '';
   const controller =
     timeoutMs > 0 && typeof AbortController !== 'undefined'
       ? new AbortController()
@@ -47,6 +59,7 @@ async function companionFetch(pathname, options = {}) {
       ...fetchOpts,
       headers: {
         'Content-Type': 'application/json',
+        ...(token ? { 'X-Crank-Team-Token': token } : {}),
         ...(fetchOpts.headers || {})
       },
       signal: controller ? controller.signal : fetchOpts.signal
@@ -61,6 +74,11 @@ async function companionFetch(pathname, options = {}) {
   if (timer) clearTimeout(timer);
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) {
+    if (res.status === 401 && data.code === 'TEAM_TOKEN_REQUIRED') {
+      throw new Error(
+        'TEAM_TOKEN_REQUIRED: Ask the user for the Crank team token, then retry with teamToken on this tool (or set CRANK_TEAM_TOKEN in MCP env).'
+      );
+    }
     throw new Error(data.error || `Companion ${res.status} on ${pathname}`);
   }
   return data;
@@ -207,12 +225,29 @@ export const toolDefinitions = [
     }
   },
   {
-    name: 'crank_get_environment',
+    name: 'crank_verify_team_token',
     description:
-      'Retune-style: return which repo/app directory Crank is bound to, virtual vs local environment (Replit, Codespaces), companion URLs, MCP endpoint, and suggested commands. Call first when unsure where code lives or how to start Crank.',
+      'Verify the shared Crank team passphrase after the user provides it. Call when crank_get_environment reports teamAuthRequired or other tools return TEAM_TOKEN_REQUIRED.',
     inputSchema: {
       type: 'object',
-      properties: {}
+      properties: {
+        teamToken: {
+          type: 'string',
+          description: 'Team passphrase from the user'
+        }
+      },
+      required: ['teamToken']
+    }
+  },
+  {
+    name: 'crank_get_environment',
+    description:
+      'Retune-style: return which repo/app directory Crank is bound to, virtual vs local environment (Replit, Codespaces), companion URLs, MCP endpoint, auth requirements, and suggested commands. Call first when unsure where code lives or how to start Crank.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...teamTokenSchema
+      }
     }
   },
   {
@@ -324,23 +359,40 @@ function formatJson(data) {
 
 export async function callTool(name, args = {}) {
   name = LEGACY_TOOL_ALIASES[name] || name;
+  const teamToken = args.teamToken || TEAM_TOKEN || '';
+  const withToken = (opts = {}) => ({ ...opts, teamToken: opts.teamToken || teamToken });
   switch (name) {
+    case 'crank_verify_team_token': {
+      const data = await companionFetch('/api/auth/verify', {
+        method: 'POST',
+        body: JSON.stringify({ token: args.teamToken }),
+        teamToken: args.teamToken
+      });
+      return formatJson({
+        ...data,
+        note: 'Token accepted — pass the same teamToken on other Crank MCP tools in this session.'
+      });
+    }
+    case 'crank_get_environment': {
+      const data = await companionFetch('/api/environment', withToken());
+      return formatJson(data);
+    }
     case 'get_selected_copy': {
       const qs = args.sessionId
         ? `?sessionId=${encodeURIComponent(args.sessionId)}`
         : '';
-      const data = await companionFetch(`/api/selection${qs}`);
+      const data = await companionFetch(`/api/selection${qs}`, withToken());
       return formatJson(data.session);
     }
     case 'propose_copy_variants': {
-      const data = await companionFetch('/api/variants', {
+      const data = await companionFetch('/api/variants', withToken({
         method: 'POST',
         body: JSON.stringify({
           sessionId: args.sessionId,
           options: { variantCount: args.variantCount || 4 }
         }),
         timeoutMs: GLEAN_VARIANTS_TIMEOUT_MS
-      });
+      }));
       return formatJson({
         sessionId: data.session.id,
         variants: data.variants
@@ -348,14 +400,14 @@ export async function callTool(name, args = {}) {
     }
     case 'apply_copy_variant': {
       const persist = args.persist !== false;
-      const data = await companionFetch('/api/apply', {
+      const data = await companionFetch('/api/apply', withToken({
         method: 'POST',
         body: JSON.stringify({
           sessionId: args.sessionId,
           variantId: args.variantId,
           persist
         })
-      });
+      }));
       return formatJson({
         applied: true,
         persisted: !!(data.persistResult && data.persistResult.persisted),
@@ -370,14 +422,14 @@ export async function callTool(name, args = {}) {
       });
     }
     case 'apply_custom_copy': {
-      const data = await companionFetch('/api/apply-nodes', {
+      const data = await companionFetch('/api/apply-nodes', withToken({
         method: 'POST',
         body: JSON.stringify({
           sessionId: args.sessionId,
           nodes: args.nodes,
           variantId: args.variantId || 'custom'
         })
-      });
+      }));
       return formatJson({
         applied: true,
         session: data.session,
@@ -389,7 +441,7 @@ export async function callTool(name, args = {}) {
         args.enriched === true || args.enriched === 'true'
           ? '?enriched=true'
           : '';
-      const data = await companionFetch(`/api/pending-changes${qs}`);
+      const data = await companionFetch(`/api/pending-changes${qs}`, withToken());
       return formatJson(data.pending);
     }
     case 'crank_get_formatted_changes': {
@@ -399,7 +451,7 @@ export async function callTool(name, args = {}) {
         params.set('clear', 'false');
       }
       const qs = params.toString() ? `?${params}` : '';
-      const data = await companionFetch(`/api/pending-changes/formatted${qs}`);
+      const data = await companionFetch(`/api/pending-changes/formatted${qs}`, withToken());
       return {
         content: [
           {
@@ -424,35 +476,31 @@ export async function callTool(name, args = {}) {
         Math.max(Number(args.timeoutMs) || 30000, 1000) + 5000,
         130000
       );
-      const data = await companionFetch(`/api/pending-changes/watch${qs}`, {
+      const data = await companionFetch(`/api/pending-changes/watch${qs}`, withToken({
         timeoutMs: watchTimeout
-      });
+      }));
       return formatJson(data);
     }
     case 'crank_clear_changes':
     case 'ack_pending_agent_prompt': {
       if (args.id) {
-        const data = await companionFetch('/api/agent-prompt/ack', {
+        const data = await companionFetch('/api/agent-prompt/ack', withToken({
           method: 'POST',
           body: JSON.stringify({ id: args.id })
-        });
+        }));
         return formatJson({ cleared: true, task: data.task });
       }
-      const data = await companionFetch('/api/pending-changes', {
+      const data = await companionFetch('/api/pending-changes', withToken({
         method: 'DELETE'
-      });
+      }));
       return formatJson({ cleared: true, task: data.task });
     }
-    case 'crank_get_environment': {
-      const data = await companionFetch('/api/environment');
-      return formatJson(data);
-    }
     case 'crank_status': {
-      const data = await companionFetch('/api/agent-status');
+      const data = await companionFetch('/api/agent-status', withToken());
       return formatJson(data);
     }
     case 'get_pending_agent_prompt': {
-      const data = await companionFetch('/api/agent-prompt');
+      const data = await companionFetch('/api/agent-prompt', withToken());
       const task = data.task;
       return {
         content: [
@@ -477,14 +525,14 @@ export async function callTool(name, args = {}) {
       };
     }
     case 'queue_agent_prompt': {
-      const data = await companionFetch('/api/agent-prompt', {
+      const data = await companionFetch('/api/agent-prompt', withToken({
         method: 'POST',
         body: JSON.stringify({
           sessionId: args.sessionId,
           variantId: args.variantId,
           source: 'mcp'
         })
-      });
+      }));
       return formatJson({
         queued: true,
         taskId: data.task?.id,

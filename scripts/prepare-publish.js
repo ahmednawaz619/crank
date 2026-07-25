@@ -15,6 +15,7 @@ const root = path.resolve(__dirname, '..');
 const src = path.join(root, '.env');
 const dest = path.join(root, 'team.env');
 
+// Glean keys only — never bundle CRANK_TEAM_TOKEN (share out-of-band).
 const ALLOW = new Set([
   'GLEAN_API_KEY',
   'GLEAN_BASE_URL',
