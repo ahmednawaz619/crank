@@ -12,7 +12,7 @@ import { useEffect } from 'react';
 import { bootCrankPanel } from './panel-boot.mjs';
 
 /**
- * Replit public companion host from the current preview hostname.
+ * Replit: same-origin Vite proxy path (not external :3344 hostname).
  * @returns {string | null}
  */
 export function detectReplitCompanionUrl() {
@@ -24,10 +24,21 @@ export function detectReplitCompanionUrl() {
     if (!/\.replit\.dev$|\.repl\.co$|\.replit\.app$/.test(host)) {
       return null;
     }
-    return `https://3344-${host.replace(/^\d+-/, '')}`;
+    return `${window.location.origin.replace(/\/$/, '')}/@crank`;
   } catch {
     return null;
   }
+}
+
+function normalizeCompanionUrl(raw) {
+  const s = String(raw || '').trim().replace(/\/$/, '');
+  if (!s) {
+    return '';
+  }
+  if (s.startsWith('/') && typeof window !== 'undefined') {
+    return window.location.origin.replace(/\/$/, '') + s;
+  }
+  return s;
 }
 
 /**
@@ -36,13 +47,13 @@ export function detectReplitCompanionUrl() {
  */
 export function resolveCrankCompanionUrl(props = {}) {
   if (typeof window !== 'undefined' && window.__CRANK_URL__) {
-    return String(window.__CRANK_URL__).replace(/\/$/, '');
+    return normalizeCompanionUrl(window.__CRANK_URL__);
   }
   if (props.companionUrl) {
-    return String(props.companionUrl).replace(/\/$/, '');
+    return normalizeCompanionUrl(props.companionUrl);
   }
   if (props.url) {
-    return String(props.url).replace(/\/$/, '');
+    return normalizeCompanionUrl(props.url);
   }
   try {
     const envUrl =
@@ -50,7 +61,7 @@ export function resolveCrankCompanionUrl(props = {}) {
       import.meta.env &&
       (import.meta.env.VITE_CRANK_URL || import.meta.env.VITE_CRANK_COMPANION_URL);
     if (envUrl) {
-      return String(envUrl).replace(/\/$/, '');
+      return normalizeCompanionUrl(envUrl);
     }
   } catch {
     // ignore

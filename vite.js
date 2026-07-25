@@ -1,11 +1,10 @@
 'use strict';
 
 /**
- * Vite plugin — HTTP proxy only for `/@crank/*` (optional).
+ * Vite plugin — HTTP + WebSocket proxy for `/@crank/*`.
  *
- * Do NOT enable `ws: true`: Vite's HMR WebSocket steals upgrades on the
- * dev-server port, so `/@crank/ws` never reaches the companion. The panel
- * connects WebSocket directly to the companion host (localhost / 3344-… Replit).
+ * HTTP uses `server.proxy`. WebSocket uses a raw `upgrade` handler so Vite HMR
+ * does not steal `/@crank/ws` before the proxy runs (Replit + local dev).
  *
  * Prefer React `<Crank />` (embedded panel). Use inject:true only for non-React.
  *
@@ -13,9 +12,9 @@
  *   export default { plugins: [crank({ inject: false })] }
  */
 
+const httpProxy = require('http-proxy');
+const { PROXY_PREFIX } = require('./lib/companion-url');
 const { resolveCompanionLoaderUrl, resolveCompanionProxyTarget } = require('./lib/loader-url');
-
-const PROXY_PREFIX = '/@crank';
 
 function crank(options = {}) {
   const inject = options.inject !== false;
@@ -32,12 +31,31 @@ function crank(options = {}) {
             [PROXY_PREFIX]: {
               target,
               changeOrigin: true,
-              // HTTP only — Vite HMR owns WebSocket upgrades on this port.
               rewrite: (p) => p.replace(new RegExp(`^${PROXY_PREFIX}`), '') || '/'
             }
           }
         }
       };
+    },
+    configureServer(server) {
+      const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true });
+      proxy.on('error', (err, _req, socket) => {
+        try {
+          socket?.destroy();
+        } catch {
+          // ignore
+        }
+      });
+
+      server.httpServer?.on('upgrade', (req, socket, head) => {
+        const url = req.url || '';
+        if (!url.startsWith(PROXY_PREFIX)) {
+          return;
+        }
+        const rewritten = url.replace(new RegExp(`^${PROXY_PREFIX}`), '') || '/';
+        req.url = rewritten.startsWith('/') ? rewritten : `/${rewritten}`;
+        proxy.ws(req, socket, head, { target });
+      });
     },
     transformIndexHtml(html) {
       if (!inject) {

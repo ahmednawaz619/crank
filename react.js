@@ -29,22 +29,33 @@ function detectReplitCompanionUrl() {
     if (!/\.replit\.dev$|\.repl\.co$|\.replit\.app$/.test(host)) {
       return null;
     }
-    return 'https://3344-' + host.replace(/^\d+-/, '');
+    return window.location.origin.replace(/\/$/, '') + '/@crank';
   } catch {
     return null;
   }
 }
 
+function normalizeCompanionUrl(raw) {
+  const s = String(raw || '').trim().replace(/\/$/, '');
+  if (!s) {
+    return '';
+  }
+  if (s.startsWith('/') && typeof window !== 'undefined') {
+    return window.location.origin.replace(/\/$/, '') + s;
+  }
+  return s;
+}
+
 function resolveCrankCompanionUrl(props) {
   props = props || {};
   if (typeof window !== 'undefined' && window.__CRANK_URL__) {
-    return String(window.__CRANK_URL__).replace(/\/$/, '');
+    return normalizeCompanionUrl(window.__CRANK_URL__);
   }
   if (props.companionUrl) {
-    return String(props.companionUrl).replace(/\/$/, '');
+    return normalizeCompanionUrl(props.companionUrl);
   }
   if (props.url) {
-    return String(props.url).replace(/\/$/, '');
+    return normalizeCompanionUrl(props.url);
   }
   const replit = detectReplitCompanionUrl();
   if (replit) {

@@ -51,6 +51,7 @@ const REQUIRED_PACK_FILES = [
 const REQUIRED_DEPS = [
   'express',
   'cors',
+  'http-proxy',
   'ws',
   '@modelcontextprotocol/sdk',
   'zod',

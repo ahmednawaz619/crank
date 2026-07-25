@@ -1,7 +1,7 @@
 {
   "name": "@ahmednawaz/crank",
-  "version": "0.3.5",
-  "description": "Internal Motive UX copy iteration: select UI text \u2192 Glean variants \u2192 MCP apply. Cursor, Replit, Claude.",
+  "version": "0.3.6",
+  "description": "Internal Motive UX copy iteration: select UI text → Glean variants → MCP apply. Cursor, Replit, Claude.",
   "repository": {
     "type": "git",
     "url": "https://github.com/ahmednawaz619/crank.git"
@@ -72,7 +72,9 @@
     "test:patch-vite": "node scripts/test-patch-vite.js",
     "test:react-detect": "node scripts/test-react-detect.js",
     "test:health-ws": "node scripts/test-health-ws.js",
-    "test": "npm run test:parse && npm run test:resolve && npm run test:patch-vite && npm run test:react-detect && npm run test:health-ws",
+    "test:companion-url": "node scripts/test-companion-url.js",
+    "test:vite-ws": "node scripts/test-vite-ws-proxy.js",
+    "test": "npm run test:parse && npm run test:resolve && npm run test:patch-vite && npm run test:react-detect && npm run test:health-ws && npm run test:companion-url && npm run test:vite-ws",
     "embed:panel": "node scripts/embed-panel.js",
     "prepack": "node scripts/embed-panel.js"
   },
@@ -87,6 +89,7 @@
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "express": "^4.21.2",
+    "http-proxy": "^1.18.1",
     "ws": "^8.18.0",
     "zod": "^3.24.2"
   },

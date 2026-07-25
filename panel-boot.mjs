@@ -11,13 +11,24 @@ import {
   CRANK_TEXT_SOURCE_JS
 } from './panel-source.mjs';
 
+function normalizeCompanionUrl(raw) {
+  const s = String(raw || '').trim().replace(/\/$/, '');
+  if (!s) {
+    return '';
+  }
+  if (s.startsWith('/') && typeof window !== 'undefined') {
+    return window.location.origin.replace(/\/$/, '') + s;
+  }
+  return s;
+}
+
 function detectReplitCompanionUrl() {
   try {
     const host = window.location.hostname || '';
     if (!/\.replit\.dev$|\.repl\.co$|\.replit\.app$/.test(host)) {
       return null;
     }
-    return `https://3344-${host.replace(/^\d+-/, '')}`;
+    return window.location.origin.replace(/\/$/, '') + '/@crank';
   } catch {
     return null;
   }
@@ -25,10 +36,10 @@ function detectReplitCompanionUrl() {
 
 function resolveCompanionUrl(explicit) {
   if (explicit) {
-    return String(explicit).replace(/\/$/, '');
+    return normalizeCompanionUrl(explicit);
   }
   if (typeof window !== 'undefined' && window.__CRANK_URL__) {
-    return String(window.__CRANK_URL__).replace(/\/$/, '');
+    return normalizeCompanionUrl(window.__CRANK_URL__);
   }
   try {
     const envUrl =
@@ -36,7 +47,7 @@ function resolveCompanionUrl(explicit) {
       import.meta.env &&
       (import.meta.env.VITE_CRANK_URL || import.meta.env.VITE_CRANK_COMPANION_URL);
     if (envUrl) {
-      return String(envUrl).replace(/\/$/, '');
+      return normalizeCompanionUrl(envUrl);
     }
   } catch {
     // ignore

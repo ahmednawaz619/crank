@@ -16,11 +16,23 @@
   }
   window.__crankActive = true;
 
-  const COMPANION_HTTP =
+  function normalizeCompanionOrigin(raw) {
+    const s = String(raw || '').trim().replace(/\/$/, '');
+    if (!s) {
+      return '';
+    }
+    if (s.startsWith('/')) {
+      return location.origin.replace(/\/$/, '') + s;
+    }
+    return s;
+  }
+
+  const COMPANION_HTTP = normalizeCompanionOrigin(
     window.__CRANK_COMPANION__ ||
-    detectCompanionOrigin() ||
-    detectReplitCompanionOrigin() ||
-    'http://127.0.0.1:3344';
+      detectCompanionOrigin() ||
+      detectReplitCompanionOrigin() ||
+      'http://127.0.0.1:3344'
+  );
   const COMPANION_WS = COMPANION_HTTP.replace(/^http/i, 'ws') + '/ws';
   const TEAM_TOKEN_KEY = 'crank:teamToken';
   // Retune-style: UI assets from the npm package (same-origin), not companion.
@@ -71,7 +83,7 @@
       if (!/\.replit\.dev$|\.repl\.co$|\.replit\.app$/.test(host)) {
         return null;
       }
-      return 'https://3344-' + host.replace(/^\d+-/, '');
+      return location.origin.replace(/\/$/, '') + '/@crank';
     } catch (_) {
       return null;
     }
