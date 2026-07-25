@@ -17,7 +17,9 @@ const { spawn } = require('child_process');
 const {
   initProject,
   PACKAGE_ROOT,
-  writeReplitGuide
+  writeReplitGuide,
+  syncCrankSkill,
+  printSetupNextSteps
 } = require('../lib/init');
 const { detectEnvironment } = require('../lib/detect');
 const { env } = require('../lib/env');
@@ -173,7 +175,10 @@ function hasDevScript(detectEnv) {
   return Boolean(detectEnv.packageJson?.scripts?.dev);
 }
 
-function applySmartDefaults(flags, detectEnv) {
+function applySmartDefaults(flags, detectEnv, command) {
+  if (command === 'start' && !flags.explicit.dev) {
+    flags.dev = false;
+  }
   if (detectEnv.isReplit) {
     flags.httpMcp = true;
     if (!flags.explicit.daemon) {
@@ -572,6 +577,7 @@ async function main() {
   process.env.CRANK_PROJECT_ROOT = path.resolve(projectRoot);
 
   if (command === 'mcp') {
+    syncCrankSkill(projectRoot);
     process.env.CRANK_MCP_MODE = process.env.CRANK_MCP_MODE || 'stdio';
     const mcpPath = path.join(PACKAGE_ROOT, 'mcp-server', 'index.js');
     const child = spawn(process.execPath, [mcpPath], {
@@ -614,7 +620,9 @@ async function main() {
   }
 
   const detectEnv = detectEnvironment(projectRoot);
-  applySmartDefaults(flags, detectEnv);
+  applySmartDefaults(flags, detectEnv, command);
+
+  syncCrankSkill(projectRoot);
 
   if (command === 'doctor') {
     const runtime = prepareRuntime(projectRoot, detectEnv);
@@ -645,7 +653,7 @@ async function main() {
   const crankConfig = path.join(projectRoot, '.crank', 'config.json');
   const shouldInit =
     command === 'init' ||
-    (command === 'run' && !fs.existsSync(crankConfig) && !detectEnv.isReplit);
+    (command === 'run' && !fs.existsSync(crankConfig));
   if (shouldInit) {
     initResult = initProject(projectRoot, {
       mcp: flags.mcp,
@@ -656,7 +664,8 @@ async function main() {
     if (command === 'init') {
       const runtime = prepareRuntime(projectRoot, detectEnv);
       printBanner(projectRoot, detectEnv, initResult, runtime, 'init only', resolved);
-      console.log('Init complete. Run `npx crank` to start everything.');
+      printSetupNextSteps(detectEnv, runtime, initResult);
+      console.log('Setup complete. Run `npx @ahmednawaz/crank start` (Replit) or `npx @ahmednawaz/crank` (local).');
       return;
     }
   }

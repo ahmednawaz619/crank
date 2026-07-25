@@ -64,15 +64,12 @@ flowchart LR
 From your **app repo root** (Replit, Cursor terminal, or Codespaces — no paths):
 
 ```bash
-npx @ahmednawaz/crank setup   # once: MCP config, skill, AGENTS.md, devDependency
-npx @ahmednawaz/crank         # starts companion + dev + panel
+npx @ahmednawaz/crank setup   # once: MCP + skill (Retune-style, global ~/.cursor + ~/.claude)
+npx @ahmednawaz/crank         # local: companion + dev when present
+npx @ahmednawaz/crank start   # Replit Workflow: companion + HTTP MCP only
 ```
 
-Set `CRANK_TEAM_TOKEN` in Replit Secrets or `.env` yourself — **never embed it in the shell command**.
-
-**AI agents (Cursor, Replit Agent, Claude):** read **[AGENTS.md](./AGENTS.md)** before running Crank commands — explains what the tool does, approved commands, and credential handling.
-
-**Replit:** see **[REPLIT.md](./REPLIT.md)**.
+Setup auto-installs MCP config and `crank-apply-changes` skill — **no manual skill copy or MCP JSON editing** (same model as Retune). Reload MCP in your IDE once after first setup.
 
 MCP config uses **`npx -y crank mcp`** (like Retune) — no absolute paths. After setup, `crank` is added to `devDependencies` so virtual environments resolve it automatically.
 
