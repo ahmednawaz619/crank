@@ -6,6 +6,7 @@
  */
 
 const crypto = require('crypto');
+const { assignUnitLabels } = require('../lib/copy-labels');
 
 /** @type {Map<string, object>} */
 const sessions = new Map();
@@ -20,8 +21,28 @@ function createSessionId() {
  * @param {object} payload
  * @returns {object}
  */
+function normalizeNodes(nodes) {
+  return assignUnitLabels(
+    (Array.isArray(nodes) ? nodes : []).map((n, i) => {
+    const text = n && n.text != null ? String(n.text) : '';
+    const path = n && n.path != null ? String(n.path) : String(i);
+    return {
+      ...n,
+      id: (n && n.id) || `copy-${path}`,
+      path,
+      text,
+      previousText: n.previousText != null ? String(n.previousText) : text,
+      // Freeze source baseline for SAVE_TEXT_CHANGE oldValue across applies.
+      originalText:
+        n.originalText != null ? String(n.originalText) : text
+    };
+  })
+  );
+}
+
 function setSelection(payload) {
   const id = createSessionId();
+  const nodes = normalizeNodes(payload.nodes);
   const session = {
     id,
     createdAt: new Date().toISOString(),
@@ -30,8 +51,8 @@ function setSelection(payload) {
     pageUrl: payload.pageUrl || '',
     selector: payload.selector || '',
     tagName: payload.tagName || '',
-    nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
-    combinedText: payload.combinedText || '',
+    nodes,
+    combinedText: payload.combinedText || nodes.map((n) => n.text).join('\n'),
     variants: [],
     appliedVariantId: null,
     meta: payload.meta || {}
@@ -96,14 +117,21 @@ function applyVariant(sessionId, variantId) {
   );
 
   session.nodes = (session.nodes || []).map((node) => {
-    const next = byPath.get(String(node.path));
+    const next =
+      byPath.get(String(node.path)) ||
+      (node.id
+        ? (variant.nodes || []).find((n) => String(n.id) === String(node.id))
+        : null);
     if (!next) {
       return node;
     }
     return {
       ...node,
+      id: node.id || next.id || `copy-${node.path}`,
       text: next.text,
-      previousText: node.text
+      previousText: node.text,
+      originalText:
+        node.originalText != null ? node.originalText : node.text
     };
   });
   session.combinedText = session.nodes.map((n) => n.text).join('\n');
@@ -119,6 +147,21 @@ function clearSessions() {
   activeSessionId = null;
 }
 
+function setGleanProgress(sessionId, progress) {
+  const session = getSession(sessionId);
+  if (!session) return null;
+  session.gleanProgress = progress || null;
+  session.gleanProgressAt = new Date().toISOString();
+  sessions.set(session.id, session);
+  return session.gleanProgress;
+}
+
+function getGleanProgress(sessionId) {
+  const session = getSession(sessionId);
+  if (!session) return null;
+  return session.gleanProgress || null;
+}
+
 module.exports = {
   setSelection,
   getActiveSession,
@@ -126,5 +169,7 @@ module.exports = {
   listSessions,
   setVariants,
   applyVariant,
-  clearSessions
+  clearSessions,
+  setGleanProgress,
+  getGleanProgress
 };

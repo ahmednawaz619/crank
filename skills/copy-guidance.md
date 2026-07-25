@@ -1,4 +1,4 @@
-# Vizcopy — product copy guidance
+# Crank — product copy guidance
 
 Internal Motive guidance for Glean copy iterations. Keep tone professional and concise.
 

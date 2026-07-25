@@ -1,15 +1,16 @@
 {
-  "name": "@vizcopy/companion",
+  "name": "@crank/companion",
   "version": "0.1.0",
   "private": true,
   "main": "server.js",
   "bin": {
-    "vizcopy": "bin/vizcopy.js"
+    "crank-companion": "bin/crank.js"
   },
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
+    "@cursor/sdk": "^1.0.23",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "ws": "^8.18.0"

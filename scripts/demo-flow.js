@@ -5,7 +5,7 @@
  *
  * Requires companion running: npm run companion
  */
-const BASE = (process.env.VIZCOPY_COMPANION_URL || 'http://127.0.0.1:3344').replace(
+const BASE = (process.env.CRANK_COMPANION_URL || 'http://127.0.0.1:3344').replace(
   /\/$/,
   ''
 );

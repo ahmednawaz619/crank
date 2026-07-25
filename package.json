@@ -1,21 +1,57 @@
 {
-  "name": "vizcopy",
+  "name": "@ahmednawaz619/crank",
   "version": "0.1.0",
-  "private": true,
-  "description": "Internal Motive tool: select page copy → Glean agent variants → MCP apply",
+  "description": "One-command copy iteration: select UI text → Glean variants → MCP apply. Works in Cursor, VS Code, Claude, and Replit.",
+  "bin": {
+    "crank": "bin/crank.js"
+  },
+  "main": "vite.js",
+  "exports": {
+    ".": "./vite.js",
+    "./vite": "./vite.js",
+    "./package.json": "./package.json"
+  },
   "workspaces": [
     "companion",
     "mcp-server"
   ],
   "scripts": {
-    "start": "npm run start --workspace=companion",
+    "start": "node bin/crank.js",
+    "crank": "node bin/crank.js",
     "companion": "npm run start --workspace=companion",
     "mcp": "npm run start --workspace=mcp-server",
     "mcp:http": "npm run start:http --workspace=mcp-server",
     "demo": "node scripts/demo-flow.js",
-    "install:all": "npm install"
+    "test:parse": "node scripts/test-parse-options.js",
+    "test:resolve": "node scripts/test-resolve-project.js",
+    "prepare:publish": "node scripts/prepare-publish.js",
+    "publish:team": "node scripts/prepare-publish.js && npm publish --access public"
   },
   "engines": {
     "node": ">=18"
-  }
+  },
+  "files": [
+    "bin",
+    "lib",
+    "companion",
+    "mcp-server",
+    "bookmarklet",
+    "skills",
+    "skill",
+    "panel",
+    "vite.js",
+    ".env.example",
+    "team.env",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "crank",
+    "glean",
+    "mcp",
+    "copy",
+    "ux-writing"
+  ]
 }

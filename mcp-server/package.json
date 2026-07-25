@@ -1,12 +1,12 @@
 {
-  "name": "@vizcopy/mcp-server",
+  "name": "@crank/mcp-server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "start:http": "VIZCOPY_MCP_MODE=http node index.js"
+    "start:http": "CRANK_MCP_MODE=http node index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

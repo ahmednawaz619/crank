@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Vizcopy MCP server
+ * Crank MCP server
  *
  * Modes:
- *   VIZCOPY_MCP_MODE=stdio (default) — Cursor / Claude Desktop local MCP
- *   VIZCOPY_MCP_MODE=http  — remote MCP for Replit Agent (HTTPS endpoint required in prod)
+ *   CRANK_MCP_MODE=stdio (default) — Cursor / Claude Desktop local MCP
+ *   CRANK_MCP_MODE=http  — remote MCP for Replit Agent (HTTPS endpoint required in prod)
  *
  * Sources:
  *   Replit custom MCP: https://docs.replit.com/build/connect-via-mcp
@@ -20,13 +20,20 @@ import {
 import express from 'express';
 import { toolDefinitions, callTool } from './tools.js';
 
-const MODE = (process.env.VIZCOPY_MCP_MODE || 'stdio').toLowerCase();
-const HTTP_PORT = Number(process.env.VIZCOPY_MCP_HTTP_PORT || 3345);
-const API_KEY = process.env.VIZCOPY_MCP_API_KEY || '';
+const MODE = (
+  process.env.CRANK_MCP_MODE ||
+  process.env.VIZCOPY_MCP_MODE ||
+  'stdio'
+).toLowerCase();
+const HTTP_PORT = Number(
+  process.env.CRANK_MCP_HTTP_PORT || process.env.VIZCOPY_MCP_HTTP_PORT || 3345
+);
+const API_KEY =
+  process.env.CRANK_MCP_API_KEY || process.env.VIZCOPY_MCP_API_KEY || '';
 
 function createMcpServer() {
   const server = new Server(
-    { name: 'vizcopy', version: '0.1.0' },
+    { name: 'crank', version: '0.1.0' },
     { capabilities: { tools: {} } }
   );
 
@@ -54,13 +61,13 @@ async function startStdio() {
   const server = createMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('[Vizcopy MCP] stdio transport ready');
+  console.error('[Crank MCP] stdio transport ready');
 }
 
 /**
  * Minimal Streamable HTTP / JSON-RPC style endpoint for remote agents.
  * Replit expects an HTTPS MCP endpoint — tunnel or deploy this service.
- * Auth: optional X-API-Key / Authorization bearer via VIZCOPY_MCP_API_KEY.
+ * Auth: optional X-API-Key / Authorization bearer via CRANK_MCP_API_KEY.
  */
 async function startHttp() {
   const app = express();
@@ -82,7 +89,7 @@ async function startHttp() {
   }
 
   app.get('/health', (_req, res) => {
-    res.json({ ok: true, service: 'vizcopy-mcp', mode: 'http' });
+    res.json({ ok: true, service: 'crank-mcp', mode: 'http' });
   });
 
   // Simple JSON tool surface (also useful for demos / curl).
@@ -116,7 +123,7 @@ async function startHttp() {
           result: {
             protocolVersion: '2024-11-05',
             capabilities: { tools: {} },
-            serverInfo: { name: 'vizcopy', version: '0.1.0' }
+            serverInfo: { name: 'crank', version: '0.1.0' }
           }
         });
         return;
@@ -155,12 +162,14 @@ async function startHttp() {
   });
 
   // Also wire stdio SDK server for local debugging in parallel? No — HTTP only here.
-  app.listen(HTTP_PORT, () => {
+  const listenHost =
+    process.env.CRANK_HOST === '0.0.0.0' || process.env.REPL_ID ? '0.0.0.0' : '127.0.0.1';
+  app.listen(HTTP_PORT, listenHost, () => {
     console.error(
-      `[Vizcopy MCP] HTTP listening on http://127.0.0.1:${HTTP_PORT}/mcp`
+      `[Crank MCP] HTTP listening on http://${listenHost}:${HTTP_PORT}/mcp`
     );
     console.error(
-      '[Vizcopy MCP] For Replit: expose this URL over HTTPS and add as custom MCP server'
+      '[Crank MCP] For Replit: expose this URL over HTTPS and add as custom MCP server'
     );
   });
 }
