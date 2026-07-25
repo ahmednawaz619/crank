@@ -1,6 +1,6 @@
 {
   "name": "@ahmednawaz/crank",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Internal Motive UX copy iteration: select UI text \u2192 Glean variants \u2192 MCP apply. Cursor, Replit, Claude.",
   "repository": {
     "type": "git",
@@ -33,9 +33,7 @@
     },
     "./vite": "./vite.js",
     "./webpack": "./webpack.js",
-    "./package.json": "./package.json",
-    "./panel": "./panel-boot.mjs",
-    "./panel-boot": "./panel-boot.mjs"
+    "./package.json": "./package.json"
   },
   "peerDependencies": {
     "html-webpack-plugin": ">=5",
@@ -66,12 +64,11 @@
     "demo": "node scripts/demo-flow.js",
     "test:parse": "node scripts/test-parse-options.js",
     "test:resolve": "node scripts/test-resolve-project.js",
-    "prepare:publish": "node scripts/embed-panel.js && node scripts/prepare-publish.js",
+    "prepare:publish": "node scripts/prepare-publish.js",
     "verify:deps": "node scripts/verify-deps.js",
-    "publish:team": "node scripts/embed-panel.js && node scripts/prepare-publish.js && node scripts/verify-deps.js && npm publish --access public",
+    "publish:team": "node scripts/prepare-publish.js && node scripts/verify-deps.js && npm publish --access public",
     "test:patch-vite": "node scripts/test-patch-vite.js",
-    "test:react-detect": "node scripts/test-react-detect.js",
-    "embed:panel": "node scripts/embed-panel.js"
+    "test:react-detect": "node scripts/test-react-detect.js"
   },
   "engines": {
     "node": ">=18"
@@ -95,6 +92,7 @@
     "bookmarklet",
     "skills",
     "skill",
+    "panel",
     "vite.js",
     "react.js",
     "react.mjs",
@@ -107,9 +105,7 @@
     "AGENTS.md",
     "REPLIT.md",
     "team.env",
-    "README.md",
-    "panel-boot.mjs",
-    "panel-source.mjs"
+    "README.md"
   ],
   "publishConfig": {
     "access": "public"

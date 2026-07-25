@@ -61,6 +61,7 @@ Then **restart the Vite / `npm run dev` server** so the bundled panel assets res
 - Workflow Run: `npx @ahmednawaz/crank start`
 - Ports: **3344** (APIs), **3345** (`/mcp`)
 - Panel UI comes from the **app bundle** — restart Vite after inject
+- Companion WebSocket is **optional** at boot (panel still shows if Glean/WS is down)
 - Companion URL for APIs: auto `https://3344-…` from hostname, or `VITE_CRANK_URL` / `window.__CRANK_URL__`
 - After closing the panel (×), a **Crank** chip appears bottom-right to reopen
 

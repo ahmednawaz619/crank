@@ -30,10 +30,39 @@
     if (window.__CRANK_ASSET_MAP__ && window.__CRANK_ASSET_MAP__[file]) {
       return window.__CRANK_ASSET_MAP__[file];
     }
-    if (ASSET_BASE && ASSET_BASE.indexOf('blob:crank/') !== 0) {
+    if (ASSET_BASE && ASSET_BASE.indexOf('blob:crank/') !== 0 && ASSET_BASE.indexOf('inline:crank/') !== 0) {
       return ASSET_BASE + file;
     }
     return COMPANION_HTTP + (companionPath || '/ui/' + file);
+  }
+
+  function injectInlineCss(cssText) {
+    let style = document.querySelector('style[data-crank-ui="1"]');
+    if (!style) {
+      style = document.createElement('style');
+      style.setAttribute('data-crank-ui', '1');
+      document.documentElement.appendChild(style);
+    }
+    style.textContent = cssText;
+  }
+
+  function injectInlineScript(code) {
+    const s = document.createElement('script');
+    s.textContent = code;
+    document.documentElement.appendChild(s);
+  }
+
+  async function loadPanelAssets() {
+    const src = window.__CRANK_ASSET_SOURCE__;
+    if (src && src.css && src.helpers && src.textSource) {
+      injectInlineCss(src.css);
+      injectInlineScript(src.helpers);
+      injectInlineScript(src.textSource);
+      return;
+    }
+    loadCss(assetUrl('crank-ui.css', '/ui/crank-ui.css') + '?v=' + Date.now());
+    await loadScript(assetUrl('crank-ui-helpers.js', '/ui/crank-ui-helpers.js') + '?v=' + Date.now());
+    await loadScript(assetUrl('text-source.js', '/ui/text-source.js') + '?v=' + Date.now());
   }
 
   function detectReplitCompanionOrigin() {
@@ -1064,9 +1093,43 @@
   }
 
   function connectWs() {
+    let companionOnline = false;
+
+    function setGleanEnabled(on) {
+      companionOnline = !!on;
+      window.__CRANK_COMPANION_ONLINE__ = companionOnline;
+      try {
+        const gleanBtn = panel && panel.querySelector('#vc-glean');
+        if (gleanBtn && !sessionId) {
+          // Keep disabled until selection+session; only gate when we know companion is down
+          if (!on) gleanBtn.disabled = true;
+        }
+      } catch (_) {}
+    }
+
+    function scheduleReconnect() {
+      const delay = Math.min(
+        (window.__CRANK_WS_BACKOFF__ || 1500) * 1.5,
+        30000
+      );
+      window.__CRANK_WS_BACKOFF__ = delay;
+      setTimeout(function () {
+        connectWs();
+      }, delay);
+    }
+
     try {
+      if (socket) {
+        try {
+          socket.onclose = null;
+          socket.close();
+        } catch (_) {}
+        socket = null;
+      }
       socket = new WebSocket(wsUrlWithToken());
       socket.addEventListener('open', function () {
+        window.__CRANK_WS_BACKOFF__ = 1500;
+        setGleanEnabled(true);
         setStatus('Connected to companion');
       });
       socket.addEventListener('message', function (ev) {
@@ -1086,7 +1149,6 @@
           if (gleanBtn) gleanBtn.disabled = !sessionId;
         }
         if (msg.type === 'GLEAN_PROGRESS') {
-          // Ignore progress once variants are on screen (or from a prior request).
           if (!gleanActiveEpoch) return;
           if (msg.sessionId && sessionId && msg.sessionId !== sessionId) return;
           showThinking(msg.progress || {});
@@ -1135,7 +1197,6 @@
         if (msg.type === 'AGENT_PROMPT_QUEUED') {
           const t = msg.task || {};
           if (t.prompt) {
-            // HTTP path already finished handoff + clipboard; WS only refreshes UI.
             finishAgentQueue(t, {
               fromWs: true,
               skipCopy: true
@@ -1154,20 +1215,18 @@
         }
       });
       socket.addEventListener('close', function () {
-        setStatus(
-          'Companion disconnected — retrying… (start with: npx crank)'
-        );
-        setTimeout(connectWs, 1500);
+        setGleanEnabled(false);
+        setStatus('Companion offline — Glean unavailable (panel still usable)');
+        scheduleReconnect();
       });
       socket.addEventListener('error', function () {
-        setStatus(
-          'Companion not running — start with npx crank / open :3344'
-        );
+        setGleanEnabled(false);
+        setStatus('Companion offline — Glean unavailable (panel still usable)');
       });
     } catch (err) {
-      setStatus(
-        'Companion not running — start with npx crank / open :3344'
-      );
+      setGleanEnabled(false);
+      setStatus('Companion offline — Glean unavailable (panel still usable)');
+      scheduleReconnect();
     }
   }
 
@@ -2344,21 +2403,38 @@
   window.__crankTeardown = teardown;
 
   async function boot() {
-    loadCss(assetUrl('crank-ui.css', '/ui/crank-ui.css') + '?v=' + Date.now());
-    await loadScript(assetUrl('crank-ui-helpers.js', '/ui/crank-ui-helpers.js') + '?v=' + Date.now());
-    await loadScript(assetUrl('text-source.js', '/ui/text-source.js') + '?v=' + Date.now());
+    await loadPanelAssets();
     buildPanelShell();
     const authed = await ensureTeamToken();
     if (!authed) {
       setStatus('Crank team token required — reload after you have it');
+      try {
+        connectWs();
+      } catch (_) {}
       return;
     }
-    connectWs();
-    setStatus('Ready — companion ' + COMPANION_HTTP);
+    // Companion WebSocket is optional — same as Retune when MCP bridge is down.
+    setStatus('Panel ready — connecting to companion…');
+    try {
+      connectWs();
+    } catch (_) {
+      setStatus('Companion offline — Glean unavailable (panel still usable)');
+    }
   }
 
   boot().catch(function (err) {
     console.error('[Crank] boot failed', err);
+    // Only wipe UI for hard asset/shell failures — never for companion/WS issues.
+    const shellReady = panel && panel.parentNode && panel.querySelector('#vc-select');
+    if (shellReady) {
+      try {
+        setStatus(
+          'UI loaded; companion optional — ' +
+            String(err && err.message ? err.message : err)
+        );
+      } catch (_) {}
+      return;
+    }
     if (panel && panel.parentNode) {
       panel.innerHTML =
         '<div class="vp-panel-block" style="padding:var(--vp-panel-padding, 1rem);">' +

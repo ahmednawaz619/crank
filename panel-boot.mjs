@@ -1,6 +1,7 @@
 /**
- * Retune-style panel boot — UI is **embedded in the npm package** and injected
- * via blob: URLs (same-origin). Companion :3344 is only for Glean / APIs / WS.
+ * Retune-style panel boot — UI is embedded and injected as inline scripts
+ * (same-origin, no blob: / companion :3344 fetch for the panel itself).
+ * Companion is only for Glean / HTTP APIs / WebSocket — optional at boot.
  */
 
 import {
@@ -43,20 +44,6 @@ function resolveCompanionUrl(explicit) {
   return detectReplitCompanionUrl() || 'http://127.0.0.1:3344';
 }
 
-function blobUrl(source, type) {
-  return URL.createObjectURL(new Blob([source], { type }));
-}
-
-function installAssetMap() {
-  window.__CRANK_ASSET_MAP__ = {
-    'crank-ui.css': blobUrl(CRANK_PANEL_CSS, 'text/css'),
-    'crank-ui-helpers.js': blobUrl(CRANK_HELPERS_JS, 'text/javascript'),
-    'text-source.js': blobUrl(CRANK_TEXT_SOURCE_JS, 'text/javascript'),
-    'crank-bookmarklet.js': blobUrl(CRANK_PANEL_JS, 'text/javascript')
-  };
-  window.__CRANK_ASSET_BASE__ = 'blob:crank/';
-}
-
 /**
  * Boot the Crank panel into the page (idempotent).
  * @param {{ companionUrl?: string }} [options]
@@ -66,17 +53,26 @@ export function bootCrankPanel(options = {}) {
     return { booted: false, reason: 'ssr' };
   }
 
-  if (document.getElementById('vp-shell')) {
+  if (document.getElementById('vp-shell') || window.__CRANK_BOOTING__) {
     return { booted: false, reason: 'already-open' };
   }
 
   const companion = resolveCompanionUrl(options.companionUrl);
   window.__CRANK_COMPANION__ = companion;
   window.__CRANK_LOADER__ = true;
-  installAssetMap();
+  window.__CRANK_BOOTING__ = true;
+
+  // Inline sources — bookmarklet injects these without blob:/network (avoids ERR_FILE_NOT_FOUND).
+  window.__CRANK_ASSET_SOURCE__ = {
+    css: CRANK_PANEL_CSS,
+    helpers: CRANK_HELPERS_JS,
+    textSource: CRANK_TEXT_SOURCE_JS
+  };
+  window.__CRANK_ASSET_BASE__ = 'inline:crank/';
 
   window.__crankBootEmbedded = function reboot() {
     window.__CRANK_LOADER__ = false;
+    window.__CRANK_BOOTING__ = false;
     window.__crankActive = false;
     if (typeof window.__crankTeardown === 'function') {
       try {
@@ -100,22 +96,29 @@ export function bootCrankPanel(options = {}) {
     }
   });
 
-  const script = document.createElement('script');
-  script.src = window.__CRANK_ASSET_MAP__['crank-bookmarklet.js'];
-  script.async = true;
-  script.dataset.crankLoader = '1';
-  script.dataset.crankBundled = '1';
-  script.onerror = () => {
-    console.error('[Crank] Failed to boot embedded panel');
+  try {
+    const script = document.createElement('script');
+    script.textContent = CRANK_PANEL_JS;
+    script.dataset.crankLoader = '1';
+    script.dataset.crankBundled = '1';
+    document.documentElement.appendChild(script);
+  } catch (err) {
+    console.error('[Crank] Failed to boot embedded panel', err);
     window.__CRANK_LOADER__ = false;
-  };
-  document.documentElement.appendChild(script);
+    window.__CRANK_BOOTING__ = false;
+    return { booted: false, reason: 'inject-failed', error: String(err) };
+  } finally {
+    // Panel IIFE runs sync via textContent; clear boot lock shortly after.
+    setTimeout(() => {
+      window.__CRANK_BOOTING__ = false;
+    }, 0);
+  }
 
-  return { booted: true, companion, mode: 'embedded' };
+  return { booted: true, companion, mode: 'embedded-inline' };
 }
 
 export function crankAssetBaseUrl() {
-  return 'blob:crank/';
+  return 'inline:crank/';
 }
 
 export function crankBookmarkletUrl() {

@@ -1,14 +1,16 @@
 'use strict';
 
 /**
- * Vite / Rolldown-vite / Vitest-compatible plugin.
+ * Vite plugin — HTTP proxy only for `/@crank/*` (optional).
  *
- * - Proxies `/@crank/*` → companion (same-origin; required on Replit iframe previews)
- * - Optionally injects the loader into index.html (skip when using React `<Crank />`)
+ * Do NOT enable `ws: true`: Vite's HMR WebSocket steals upgrades on the
+ * dev-server port, so `/@crank/ws` never reaches the companion. The panel
+ * connects WebSocket directly to the companion host (localhost / 3344-… Replit).
+ *
+ * Prefer React `<Crank />` (embedded panel). Use inject:true only for non-React.
  *
  *   import { crank } from '@ahmednawaz/crank/vite'
- *   export default { plugins: [crank()] }                 // Vite-only apps
- *   export default { plugins: [crank({ inject: false })] } // React + <Crank />
+ *   export default { plugins: [crank({ inject: false })] }
  */
 
 const { resolveCompanionLoaderUrl, resolveCompanionProxyTarget } = require('./lib/loader-url');
@@ -18,9 +20,7 @@ const PROXY_PREFIX = '/@crank';
 function crank(options = {}) {
   const inject = options.inject !== false;
   const target = resolveCompanionProxyTarget(options);
-  const src =
-    options.src ||
-    `${PROXY_PREFIX}/dev-loader.js`;
+  const src = options.src || `${PROXY_PREFIX}/dev-loader.js`;
 
   return {
     name: 'crank-dev-loader',
@@ -32,7 +32,7 @@ function crank(options = {}) {
             [PROXY_PREFIX]: {
               target,
               changeOrigin: true,
-              ws: true,
+              // HTTP only — Vite HMR owns WebSocket upgrades on this port.
               rewrite: (p) => p.replace(new RegExp(`^${PROXY_PREFIX}`), '') || '/'
             }
           }
