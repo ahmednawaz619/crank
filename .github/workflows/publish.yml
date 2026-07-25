@@ -1,0 +1,38 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      - name: Prepare team.env for tarball
+        run: node scripts/prepare-publish.js
+        env:
+          GLEAN_API_KEY: ${{ secrets.GLEAN_API_KEY }}
+          GLEAN_BASE_URL: ${{ secrets.GLEAN_BASE_URL }}
+          GLEAN_AGENT_ID: ${{ secrets.GLEAN_AGENT_ID }}
+          GLEAN_ACT_AS: ${{ secrets.GLEAN_ACT_AS }}
+          GLEAN_STUB: ${{ secrets.GLEAN_STUB }}
+
+      - run: node scripts/verify-deps.js
+
+      - name: Publish to npm (OIDC trusted publishing)
+        run: npm publish --provenance --access public

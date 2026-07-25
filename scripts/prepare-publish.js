@@ -26,21 +26,31 @@ const ALLOW = new Set([
   'CRANK_GLEAN_OPTION_COUNT'
 ]);
 
-if (!fs.existsSync(src)) {
-  console.error('Missing .env — add GLEAN_API_KEY first.');
-  process.exit(1);
+const lines = [];
+
+if (fs.existsSync(src)) {
+  for (const line of fs.readFileSync(src, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue;
+    }
+    const key = trimmed.slice(0, trimmed.indexOf('=')).trim();
+    if (ALLOW.has(key)) {
+      lines.push(trimmed);
+    }
+  }
+} else {
+  for (const key of ALLOW) {
+    const value = process.env[key];
+    if (value != null && String(value).trim() !== '') {
+      lines.push(`${key}=${value}`);
+    }
+  }
 }
 
-const lines = [];
-for (const line of fs.readFileSync(src, 'utf8').split(/\r?\n/)) {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed.startsWith('#')) {
-    continue;
-  }
-  const key = trimmed.slice(0, trimmed.indexOf('=')).trim();
-  if (ALLOW.has(key)) {
-    lines.push(trimmed);
-  }
+if (!lines.length) {
+  console.error('Missing Glean config — add .env locally or GitHub Actions secrets.');
+  process.exit(1);
 }
 
 if (!lines.some((l) => l.startsWith('GLEAN_API_KEY='))) {
