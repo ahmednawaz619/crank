@@ -1395,6 +1395,40 @@
     return parts;
   }
 
+  /** Pure runtime data — show in selection list, hide from Glean variants/copy. */
+  function isDynamicOnlyNode(n) {
+    if (!n) return false;
+    const ts = n.textSource && n.textSource.type;
+    if (ts === 'dynamic-data') return true;
+    const parts = n.parts || [];
+    if (parts.length) {
+      const looksStatic = TS().looksLikeStaticLabel || function () {
+        return false;
+      };
+      const hasEditableStatic = parts.some(function (p) {
+        return (
+          p.type !== 'dynamic-data' &&
+          p.editable !== false &&
+          looksStatic(String(p.text || ''))
+        );
+      });
+      return !hasEditableStatic;
+    }
+    if (n.editable === false && ts !== 'static-label') return true;
+    const looksData = TS().looksLikeDataValue;
+    const looksStatic = TS().looksLikeStaticLabel;
+    if (
+      looksData &&
+      looksStatic &&
+      !n.textSource &&
+      looksData(n.text) &&
+      !looksStatic(n.text)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
   function summarizeUnitSource(parts, classify, el, fullText) {
     const types = {};
     parts.forEach(function (p) {
@@ -1608,6 +1642,7 @@
     let applied = 0;
     for (let i = 0; i < resolved.length; i++) {
       const node = resolved[i].node;
+      if (isDynamicOnlyNode(node)) continue;
       let el = resolved[i].el;
       if (!el && byPath && node.path != null) {
         el = byPath.get(String(node.path)) || null;
@@ -2371,9 +2406,29 @@
   function variantFieldRows(variant) {
     const fields = variant && variant.fields ? variant.fields : null;
     const rows = [];
-    const sessionLabels = (selectedNodes || []).map(function (n, idx) {
-      return roleLabel(n.role, n, idx, selectedNodes);
+    const sessionLabels = (selectedNodes || [])
+      .filter(function (n) {
+        return !isDynamicOnlyNode(n);
+      })
+      .map(function (n, idx) {
+        return roleLabel(n.role, n, idx, selectedNodes);
+      });
+
+    const variantNodes = (variant.nodes || []).filter(function (n) {
+      return !isDynamicOnlyNode(n);
     });
+    if (variantNodes.length) {
+      variantNodes.forEach(function (n, idx) {
+        const text = String(n && n.text != null ? n.text : '').trim();
+        if (!text) return;
+        rows.push({
+          label: roleLabel(n.role, n, idx, variantNodes),
+          text: text
+        });
+      });
+      return rows;
+    }
+
     if (
       fields &&
       (fields.heading ||
@@ -2418,14 +2473,6 @@
       }
       return rows;
     }
-    (variant.nodes || []).forEach(function (n, idx) {
-      const text = String(n && n.text != null ? n.text : '').trim();
-      if (!text) return;
-      rows.push({
-        label: roleLabel(n.role, n, idx, variant.nodes),
-        text: text
-      });
-    });
     return rows;
   }
 
@@ -2452,8 +2499,9 @@
       if (n.id) byId[String(n.id)] = n;
     });
     selectedNodes = selectedNodes.map(function (n) {
+      if (isDynamicOnlyNode(n)) return n;
       const next = (n.id && byId[String(n.id)]) || byPath[String(n.path)];
-      if (!next) return n;
+      if (!next || isDynamicOnlyNode(next)) return n;
       return Object.assign({}, n, { text: next.text });
     });
     // If selection was empty of matching paths, fall back to variant nodes.

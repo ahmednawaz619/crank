@@ -6,7 +6,8 @@
  */
 
 const crypto = require('crypto');
-const { unitDisplayLabel } = require('../lib/copy-labels');
+const { unitDisplayLabel, isJunkCopyValue } = require('../lib/copy-labels');
+const { isDynamicOnlyNode, isEditableCopyNode } = require('../lib/copy-dynamic');
 
 /** @type {object|null} */
 let pending = null;
@@ -55,28 +56,31 @@ function collectCopyChanges({ session, variant }) {
   const variantNodes = Array.isArray(variant?.nodes) ? variant.nodes : [];
 
   if (variantNodes.length) {
-    for (let vi = 0; vi < variantNodes.length; vi++) {
-      const vn = variantNodes[vi];
-      const sn = findSessionNode(sessionNodes, vn);
+    for (let i = 0; i < variantNodes.length; i++) {
+      const vn = variantNodes[i];
+      const sn =
+        sessionNodes[i] && String(sessionNodes[i].path) === String(vn.path)
+          ? sessionNodes[i]
+          : findSessionNode(sessionNodes, vn) || sessionNodes[i];
+      if (!sn) continue;
+      if (isDynamicOnlyNode(sn) || isDynamicOnlyNode(vn)) continue;
+      if (!isEditableCopyNode(sn)) continue;
       const oldText =
-        sn?.originalText ?? sn?.previousText ?? sn?.text ?? '';
+        sn.originalText ?? sn.previousText ?? sn.text ?? '';
       const newText = vn.text != null ? vn.text : '';
       if (String(oldText) === String(newText)) continue;
-      const snIndex = sn
-        ? sessionNodes.findIndex((n) => n && String(n.path) === String(sn.path))
-        : vi;
+      if (isJunkCopyValue(oldText) && isJunkCopyValue(newText)) continue;
+      if (isJunkCopyValue(newText)) continue;
       changes.push({
-        id: vn.id || sn?.id || `copy-${vn.path}`,
-        role: vn.role || sn?.role || 'text',
-        label: roleLabel(
-          vn.role || sn?.role,
-          sn || vn,
-          snIndex >= 0 ? snIndex : vi,
-          sessionNodes
-        ),
-        selector: vn.selector || sn?.selector || session?.selector || '',
-        path: vn.path != null ? vn.path : sn?.path,
-        editable: sn?.editable !== false && vn.editable !== false,
+        id: vn.id || sn.id || `copy-${vn.path ?? i}`,
+        role: vn.role || sn.role || 'text',
+        label:
+          vn.copyLabel ||
+          sn.label ||
+          roleLabel(vn.role || sn.role, sn, i, sessionNodes),
+        selector: vn.selector || sn.selector || session?.selector || '',
+        path: vn.path != null ? vn.path : sn.path,
+        editable: sn.editable !== false && vn.editable !== false,
         oldText: String(oldText),
         newText: String(newText)
       });
@@ -119,6 +123,7 @@ function collectCopyChanges({ session, variant }) {
       used.add(sessionNodes.indexOf(match));
     }
     if (!match) continue;
+    if (isDynamicOnlyNode(match)) continue;
     const oldText =
       match.originalText ?? match.previousText ?? match.text ?? '';
     if (String(oldText) === String(slot.value)) continue;
@@ -152,7 +157,7 @@ function collectCopyChangesFromEdits({ session, nodes }) {
 
   for (let i = 0; i < edits.length; i++) {
     const en = edits[i];
-    if (en && en.editable === false) continue;
+    if (en && (en.editable === false || isDynamicOnlyNode(en))) continue;
     const sn = findSessionNode(sessionNodes, en) || sessionNodes[i];
     const oldText =
       sn?.originalText ?? sn?.previousText ?? sn?.text ?? en?.originalText ?? '';

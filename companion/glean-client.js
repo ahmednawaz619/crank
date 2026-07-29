@@ -23,6 +23,11 @@ const {
   assignUnitLabels,
   hasSemanticStructure
 } = require('../lib/copy-labels');
+const {
+  gleanEligibleNodes,
+  mergeVariantNodes,
+  isExcludedGleanValue
+} = require('../lib/copy-dynamic');
 
 const SKILLS_DIR = path.resolve(__dirname, '..', 'skills');
 const DEFAULT_AGENT_ID = 'a866095fd53b419ab08338e3559fb7aa';
@@ -114,7 +119,8 @@ function loadSkillsContext() {
 }
 
 function stubVariants(session) {
-  const nodes = assignUnitLabels(Array.isArray(session.nodes) ? session.nodes : []);
+  const allNodes = assignUnitLabels(Array.isArray(session.nodes) ? session.nodes : []);
+  const nodes = gleanEligibleNodes(allNodes);
   const base = nodes.map((n, i) => {
     const path = n.path != null ? String(n.path) : String(i);
     return {
@@ -208,15 +214,18 @@ function baseUrl() {
  * and falls back to generic assumptions.
  */
 function formatDraft(session) {
-  const nodes = assignUnitLabels(
+  const allNodes = assignUnitLabels(
     Array.isArray(session.nodes) ? session.nodes : []
   );
+  const nodes = gleanEligibleNodes(allNodes);
   if (!nodes.length) {
-    return String(session.combinedText || '').trim().slice(0, 1500);
+    return '';
   }
   return nodes
-    .map((n, i) => {
-      const label = n.label || unitDraftLabel(n, i, nodes);
+    .map((n) => {
+      const label =
+        n.label ||
+        unitDraftLabel(n, n._sessionIndex != null ? n._sessionIndex : 0, allNodes);
       return `${label}: ${String(n.text || '').trim()}`;
     })
     .join('\n')
@@ -224,12 +233,17 @@ function formatDraft(session) {
 }
 
 function draftLabelHint(session) {
-  const nodes = assignUnitLabels(
+  const allNodes = assignUnitLabels(
     Array.isArray(session.nodes) ? session.nodes : []
   );
+  const nodes = gleanEligibleNodes(allNodes);
   if (!nodes.length) return 'Copy 1:';
-  if (hasSemanticStructure(nodes)) {
-    const labels = nodes.map((n, i) => n.label || unitDraftLabel(n, i, nodes));
+  if (hasSemanticStructure(allNodes)) {
+    const labels = nodes.map(
+      (n) =>
+        n.label ||
+        unitDraftLabel(n, n._sessionIndex != null ? n._sessionIndex : 0, allNodes)
+    );
     return labels.join(', ');
   }
   if (nodes.length === 1) return 'Copy 1:';
@@ -438,7 +452,7 @@ function parseLabeledCopyFields(block) {
     const valueEnd = i + 1 < hits.length ? hits[i + 1].labelStart : text.length;
     const rawValue = trimTableCell(text.slice(hits[i].valueStart, valueEnd));
     const value = cleanCopyField(rawValue);
-    if (!value) continue;
+    if (!value || isExcludedGleanValue(value)) continue;
     const lower = hits[i].rawLabel.toLowerCase();
     let role = 'text';
     let key = 'body';
@@ -495,7 +509,7 @@ function assignmentListFromFields(fields = {}, labeled = null) {
         role: f.role || 'text',
         value: cleanCopyField(f.text)
       }))
-      .filter((a) => a.value);
+      .filter((a) => a.value && !isExcludedGleanValue(a.value));
   }
   const list = [];
   if (fields.heading) {
@@ -568,6 +582,28 @@ function isOriginalVariant(headerMeta, mapped, nodes) {
 }
 
 /**
+ * Map Glean labeled fields onto selection nodes in order — skip junk values
+ * without shifting (Copy 1: "/" must not push Copy 2 onto session node 2).
+ */
+function mapLabeledFieldsToNodes(mapped, labeled) {
+  if (!Array.isArray(labeled) || !labeled.length || !mapped.length) {
+    return mapped;
+  }
+
+  let nodeIdx = 0;
+  for (const f of labeled) {
+    const value = cleanCopyField(f.text);
+    if (!value || isExcludedGleanValue(value)) continue;
+    if (nodeIdx >= mapped.length) break;
+    mapped[nodeIdx].text = value;
+    mapped[nodeIdx].copyLabel = f.rawLabel || f.label || `Copy ${nodeIdx + 1}`;
+    nodeIdx += 1;
+  }
+
+  return mapped;
+}
+
+/**
  * Map Glean Heading/Body/CTA (including Body 1..N) onto selected copy units 1:1.
  * Never blast one field onto every node that shares a role (e.g. all `text`).
  * When counts match, zip by order; otherwise exclusive role match then positional.
@@ -584,6 +620,8 @@ function mapOptionFieldsToNodes(nodes, fields = {}, labeled = null) {
       text: String(n.text != null ? n.text : ''),
       editable: n.editable,
       textSource: n.textSource,
+      label: n.label,
+      copyLabel: n.copyLabel,
       originalText:
         n.originalText != null
           ? String(n.originalText)
@@ -593,13 +631,19 @@ function mapOptionFieldsToNodes(nodes, fields = {}, labeled = null) {
     };
   });
 
+  if (Array.isArray(labeled) && labeled.length) {
+    return mapLabeledFieldsToNodes(mapped, labeled);
+  }
+
   const assignments = assignmentListFromFields(fields, labeled);
   if (!assignments.length || !mapped.length) return mapped;
 
   // Equal counts → positional zip (Heading + Body 1..N ↔ selection units).
   if (assignments.length === mapped.length) {
     for (let i = 0; i < mapped.length; i++) {
-      mapped[i].text = assignments[i].value;
+      if (!isExcludedGleanValue(assignments[i].value)) {
+        mapped[i].text = assignments[i].value;
+      }
     }
     return mapped;
   }
@@ -647,9 +691,11 @@ function mapOptionFieldsToNodes(nodes, fields = {}, labeled = null) {
  */
 function parseOptionsFromText(text, session, maxOptions = DEFAULT_OPTION_COUNT) {
   const cap = Math.min(Math.max(Number(maxOptions) || DEFAULT_OPTION_COUNT, 2), 6);
-  const nodes = assignUnitLabels(
+  const allNodes = assignUnitLabels(
     Array.isArray(session.nodes) ? session.nodes : []
   );
+  const eligibleNodes = gleanEligibleNodes(allNodes);
+  const nodes = eligibleNodes;
   const normalized = String(text || '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/&nbsp;/gi, ' ')
@@ -678,14 +724,17 @@ function parseOptionsFromText(text, session, maxOptions = DEFAULT_OPTION_COUNT) 
     seenNums.add(num);
 
     const fields = fieldsFromLabeled(labeled);
-    const mapped = mapOptionFieldsToNodes(nodes, fields, labeled);
+    const mappedEligible = mapOptionFieldsToNodes(nodes, fields, labeled);
+    const mapped = mergeVariantNodes(allNodes, mappedEligible);
 
-    if (isOriginalVariant(headerMeta, mapped, nodes)) continue;
+    if (isOriginalVariant(headerMeta, mappedEligible, nodes)) continue;
 
     const rationales = labeled
       .map((f) => extractFieldRationale(f.rawText || f.text))
       .filter(Boolean);
-    const summaryParts = labeled.map((f) => cleanCopyField(f.text)).filter(Boolean);
+    const summaryParts = mappedEligible
+      .map((n) => cleanCopyField(n.text))
+      .filter(Boolean);
 
     const variant = {
       id: `glean-option-${num}`,
@@ -717,7 +766,7 @@ function parseOptionsFromText(text, session, maxOptions = DEFAULT_OPTION_COUNT) 
       label: 'Glean response',
       summary: String(text || '').slice(0, 200),
       fields: {},
-      nodes: mapOptionFieldsToNodes(nodes, {}),
+      nodes: mergeVariantNodes(allNodes, mapOptionFieldsToNodes(nodes, {})),
       rawText: text
     }
   ];

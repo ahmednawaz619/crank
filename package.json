@@ -1,6 +1,6 @@
 {
   "name": "@ahmednawaz/crank",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "Internal Motive UX copy iteration: select UI text → Glean variants → MCP apply. Cursor, Replit, Claude.",
   "repository": {
     "type": "git",
@@ -69,9 +69,12 @@
     "dev:watch": "node scripts/watch-panel.js",
     "demo": "node scripts/demo-flow.js",
     "dev:demo": "node companion/server.js",
+    "test:parse": "node scripts/test-parse-options.js",
     "test:copy-prompt": "node scripts/test-copy-prompt.js",
+    "test:upgrade": "node scripts/test-upgrade.js",
     "test:resolve": "node scripts/test-resolve-project.js",
     "prepare:publish": "node scripts/embed-panel.js && node scripts/prepare-publish.js",
+    "postinstall": "node scripts/postinstall-consumer.js",
     "verify:deps": "node scripts/verify-deps.js",
     "publish:team": "node scripts/embed-panel.js && node scripts/prepare-publish.js && node scripts/verify-deps.js && npm publish --access public",
     "publish:preview": "CRANK_CHANNEL=preview node scripts/embed-panel.js && node scripts/prepare-publish.js && node scripts/verify-deps.js && npm publish --tag preview --access public",
@@ -80,7 +83,7 @@
     "test:health-ws": "node scripts/test-health-ws.js",
     "test:companion-url": "node scripts/test-companion-url.js",
     "test:vite-ws": "node scripts/test-vite-ws-proxy.js",
-    "test": "npm run test:parse && npm run test:copy-prompt && npm run test:resolve && npm run test:patch-vite && npm run test:react-detect && npm run test:health-ws && npm run test:companion-url && npm run test:vite-ws",
+    "test": "npm run test:parse && npm run test:copy-prompt && npm run test:upgrade && npm run test:resolve && npm run test:patch-vite && npm run test:react-detect && npm run test:health-ws && npm run test:companion-url && npm run test:vite-ws",
     "embed:panel": "node scripts/embed-panel.js",
     "prepack": "node scripts/embed-panel.js"
   },

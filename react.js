@@ -1,4 +1,7 @@
 'use strict';
+/** Bumped each release — invalidates Vite optimizeDeps cache for this entry. */
+const CRANK_REACT_LOADER_VERSION = "0.3.9";
+
 
 /**
  * CJS build of @ahmednawaz/crank/react.

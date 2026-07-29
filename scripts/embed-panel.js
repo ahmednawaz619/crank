@@ -65,3 +65,5 @@ console.log(
   '[crank] embedded panel-source.mjs',
   `${(Buffer.byteLength(out) / 1024).toFixed(1)} KB`
 );
+
+require('./stamp-react-loader.js');

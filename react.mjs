@@ -10,6 +10,9 @@
 
 import { useEffect } from 'react';
 import { bootCrankPanel } from './panel-boot.mjs';
+/** Bumped each release — invalidates Vite optimizeDeps cache for this entry. */
+export const CRANK_REACT_LOADER_VERSION = "0.3.9";
+
 
 /**
  * Replit: same-origin Vite proxy path (not external :3344 hostname).

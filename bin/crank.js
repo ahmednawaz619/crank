@@ -49,6 +49,7 @@ Commands:
   start         Start companion (assumes setup already done)
   stop          Stop daemon companion + HTTP MCP listeners
   doctor        Print detected environment + runtime URLs
+  upgrade       Install @latest, clear Vite cache, verify runtime deps
   status        Print whether companion /health responds
 
 Flags:
@@ -79,6 +80,7 @@ Examples:
   npx @ahmednawaz/crank setup
   npx @ahmednawaz/crank inject
   npx @ahmednawaz/crank start
+  npx @ahmednawaz/crank upgrade
   npx @ahmednawaz/crank mcp
   npx @ahmednawaz/crank stop
   npx @ahmednawaz/crank --preview
@@ -143,7 +145,7 @@ function parseArgs(argv) {
   }
   let command = 'run';
   let projectRoot = process.cwd();
-  const cmds = new Set(['init', 'setup', 'start', 'doctor', 'stop', 'status', 'mcp', 'inject']);
+  const cmds = new Set(['init', 'setup', 'start', 'doctor', 'upgrade', 'stop', 'status', 'mcp', 'inject']);
   if (positional[0] === 'setup') {
     command = 'init';
   } else if (cmds.has(positional[0])) {
@@ -723,6 +725,7 @@ async function main() {
 
   if (command === 'doctor') {
     const runtime = prepareRuntime(projectRoot, detectEnv);
+    const { diagnoseCrankInstall } = require('../lib/upgrade');
     console.log(
       JSON.stringify(
         {
@@ -732,8 +735,10 @@ async function main() {
           environment: detectEnv,
           runtime,
           flags,
+          crankInstall: diagnoseCrankInstall(projectRoot),
           commands: {
             setup: 'npx crank setup',
+            upgrade: 'npx crank upgrade',
             start: 'npx crank',
             mcp: 'npx crank mcp',
             agentPaste: 'Apply the pending Crank change'
@@ -744,6 +749,25 @@ async function main() {
       )
     );
     return;
+  }
+
+  if (command === 'upgrade') {
+    const { upgradeCrankProject } = require('../lib/upgrade');
+    const result = upgradeCrankProject(projectRoot, { install: true });
+    console.log(JSON.stringify(result, null, 2));
+    if (result.hints && result.hints.length) {
+      for (const hint of result.hints) {
+        console.log(`[Crank] ${hint}`);
+      }
+    }
+    if (result.ok) {
+      console.log(
+        `[Crank] Upgrade complete — ${result.before || '(none)'} → ${result.after}. Restart Vite + companion.`
+      );
+    } else {
+      console.error('[Crank] Upgrade incomplete — see hints above.');
+    }
+    process.exit(result.ok ? 0 : 1);
   }
 
   let initResult = null;

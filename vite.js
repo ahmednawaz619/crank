@@ -15,6 +15,7 @@
 const httpProxy = require('http-proxy');
 const { PROXY_PREFIX } = require('./lib/companion-url');
 const { resolveCompanionLoaderUrl, resolveCompanionProxyTarget } = require('./lib/loader-url');
+const CRANK_VERSION = require('./package.json').version;
 
 function crank(options = {}) {
   const inject = options.inject !== false;
@@ -26,6 +27,12 @@ function crank(options = {}) {
     apply: 'serve',
     config() {
       return {
+        optimizeDeps: {
+          include: ['@ahmednawaz/crank/react']
+        },
+        define: {
+          __CRANK_VITE_PLUGIN_VERSION__: JSON.stringify(CRANK_VERSION)
+        },
         server: {
           proxy: {
             [PROXY_PREFIX]: {
