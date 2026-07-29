@@ -1,6 +1,6 @@
 {
   "name": "@ahmednawaz/crank",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "description": "Internal Motive UX copy iteration: select UI text → Glean variants → MCP apply. Cursor, Replit, Claude.",
   "repository": {
     "type": "git",
@@ -74,7 +74,7 @@
     "test:upgrade": "node scripts/test-upgrade.js",
     "test:resolve": "node scripts/test-resolve-project.js",
     "prepare:publish": "node scripts/embed-panel.js && node scripts/prepare-publish.js",
-    "postinstall": "node scripts/postinstall-consumer.js",
+    "postinstall": "node lib/postinstall-consumer.js",
     "verify:deps": "node scripts/verify-deps.js",
     "publish:team": "node scripts/embed-panel.js && node scripts/prepare-publish.js && node scripts/verify-deps.js && npm publish --access public",
     "publish:preview": "CRANK_CHANNEL=preview node scripts/embed-panel.js && node scripts/prepare-publish.js && node scripts/verify-deps.js && npm publish --tag preview --access public",
