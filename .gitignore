@@ -7,4 +7,5 @@ team.env
 dist/
 .crank/secrets.json
 coverage/
+*.tgz
 .crank/runtime.json
