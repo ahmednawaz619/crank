@@ -1989,3 +1989,105 @@ button:disabled,
   line-height: 1.45;
 }
 
+/* Floating launcher + selection hint */
+#vp-crank-fab,
+.vp-crank-fab {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2147483647;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  box-shadow:
+    0 4px 16px rgb(0 0 0 / 0.22),
+    0 1px 3px rgb(0 0 0 / 0.12);
+  transition:
+    transform 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1)),
+    box-shadow 160ms var(--ease-out, cubic-bezier(0.23, 1, 0.32, 1));
+}
+
+#vp-crank-fab:hover,
+.vp-crank-fab:hover {
+  transform: scale(1.04);
+  box-shadow:
+    0 6px 22px rgb(0 0 0 / 0.26),
+    0 2px 6px rgb(0 0 0 / 0.14);
+}
+
+#vp-crank-fab:active,
+.vp-crank-fab:active {
+  transform: scale(0.98);
+}
+
+#vp-crank-fab img,
+.vp-crank-fab img {
+  width: 36px;
+  height: 36px;
+  display: block;
+  pointer-events: none;
+  border-radius: 50%;
+}
+
+#vp-crank-fab.vp-crank-fab--active,
+.vp-crank-fab.vp-crank-fab--active {
+  box-shadow:
+    0 0 0 3px oklch(0.7 0.06 180),
+    0 4px 16px rgb(0 0 0 / 0.22);
+  transform: scale(1.05);
+}
+
+#vp-crank-select-hint,
+.vp-crank-select-hint {
+  position: fixed;
+  bottom: 84px;
+  right: 20px;
+  z-index: 2147483647;
+  max-width: min(280px, calc(100vw - 40px));
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border, oklch(0.89 0.006 255));
+  background: var(--card, #fff);
+  color: var(--foreground, #111);
+  font-family: var(--vp-font-family-sans, ui-sans-serif, system-ui, sans-serif);
+  font-size: var(--vp-font-size-support, 12px);
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
+  pointer-events: none;
+}
+
+#vp-crank-team-auth,
+.vp-crank-team-auth {
+  position: fixed;
+  bottom: 84px;
+  right: 20px;
+  z-index: 2147483647;
+  width: min(300px, calc(100vw - 40px));
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border, oklch(0.89 0.006 255));
+  background: var(--card, #fff);
+  color: var(--foreground, #111);
+  font-family: var(--vp-font-family-sans, ui-sans-serif, system-ui, sans-serif);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
+}
+
+.vp-crank-team-auth-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border, oklch(0.89 0.006 255));
+  border-radius: 6px;
+  background: var(--background, #fff);
+  color: var(--foreground, #111);
+  font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+  margin-bottom: 8px;
+}
+

@@ -200,6 +200,118 @@ function publicCompanionUrl(req) {
   return `http://${host}:${PORT}`;
 }
 
+const DEMO_HTML = path.resolve(__dirname, '..', 'panel', 'demo.html');
+
+function readPanelVersionMeta() {
+  const fallback = {
+    version: require('../package.json').version || '0.0.0',
+    build: null,
+    channel: require('../lib/panel-channel').normalizeChannel(process.env.CRANK_CHANNEL)
+  };
+  try {
+    const file = path.join(__dirname, '..', 'panel', 'panel-version.json');
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return {
+        version: String(parsed.version || fallback.version),
+        build: parsed.build || null,
+        channel: require('../lib/panel-channel').normalizeChannel(
+          parsed.channel || process.env.CRANK_CHANNEL
+        )
+      };
+    }
+  } catch {
+    // ignore
+  }
+  return fallback;
+}
+
+function sendNoCacheDemo(_req, res) {
+  if (!fs.existsSync(DEMO_HTML)) {
+    res.status(404).type('text/plain').send('panel/demo.html missing from package');
+    return;
+  }
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+    Pragma: 'no-cache',
+    Expires: '0'
+  });
+  res.type('html');
+  res.sendFile(DEMO_HTML);
+}
+
+function renderSetupPage(req, res) {
+  const publicUrl = publicCompanionUrl(req);
+  const bookmarkUrl = `${publicUrl}/bookmarklet.js`;
+  const mcpPath = path.resolve(__dirname, '..', 'mcp-server', 'index.js');
+  const runtimeFile = path.join(PROJECT_ROOT, '.crank', 'runtime.json');
+  let mcpEndpoint = '';
+  if (fs.existsSync(runtimeFile)) {
+    try {
+      mcpEndpoint = JSON.parse(fs.readFileSync(runtimeFile, 'utf8'))?.mcp?.endpoint || '';
+    } catch {
+      mcpEndpoint = '';
+    }
+  }
+  res.type('html').send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Crank setup</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1.25rem; color: #1a1a1a; line-height: 1.5; }
+    code { background: #f3f3f3; padding: 0.1em 0.35em; border-radius: 4px; }
+    a.bookmarklet { display: inline-block; margin-top: 1rem; padding: 0.55rem 0.9rem; background: #0f766e; color: #fff; text-decoration: none; border-radius: 6px; font-weight: 600; }
+    .muted { color: #555; font-size: 0.95rem; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 1rem 1.1rem; margin: 1.25rem 0; background: #fafafa; }
+    h2 { font-size: 1rem; margin: 0 0 0.4rem; }
+    pre { background: #f3f3f3; padding: 0.75rem 0.9rem; border-radius: 8px; overflow: auto; font-size: 0.82rem; }
+    ol { padding-left: 1.25rem; }
+  </style>
+</head>
+<body>
+  <h1>Crank setup</h1>
+  <p class="muted"><a href="/">← Panel demo</a></p>
+  <p class="muted">One-command copy iteration — select a <code>div</code>, send text to Glean, apply via MCP.</p>
+  <p>Companion is running at <code>${publicUrl}</code>.</p>
+  <p>Project root: <code>${PROJECT_ROOT}</code></p>
+  ${mcpEndpoint ? `<p>Replit MCP endpoint: <code>${mcpEndpoint}</code></p>` : ''}
+
+  <div class="card">
+    <h2>One command</h2>
+    <p class="muted" style="margin:0">From your app repo run <code>npx crank</code>. Vite apps auto-load the panel on <code>npm run dev</code>.</p>
+  </div>
+
+  <p>Fallback — drag this to your bookmarks bar (works on any page, any environment):</p>
+  <a class="bookmarklet" href="javascript:(function(){var s=document.createElement('script');s.src='${bookmarkUrl}?v='+Date.now();document.documentElement.appendChild(s);})();">Crank</a>
+
+  <div class="card">
+    <h2>Continue in your current Cursor chat</h2>
+    <p class="muted">Panel <strong>Agent</strong> queues structured old→new copy changes on this companion and copies <code>Apply the pending Crank change</code> to the clipboard. Paste that in your <strong>current</strong> Cursor chat — the <code>crank-apply-changes</code> skill pulls via MCP.</p>
+    <ol>
+      <li class="muted">Run <code>npx crank</code> / init so <code>.cursor/mcp.json</code> and the skill are installed.</li>
+      <li class="muted">Reload your MCP servers or restart Cursor after updating the config.</li>
+      <li class="muted">In the panel click <strong>Agent</strong>, then paste <code>Apply the pending Crank change</code> in your current Cursor chat.</li>
+    </ol>
+    <pre>{
+  "mcpServers": {
+    "crank": {
+      "command": "node",
+      "args": ["${mcpPath}"],
+      "env": {
+        "CRANK_COMPANION_URL": "${publicUrl}",
+        "CRANK_MCP_MODE": "stdio"
+      }
+    }
+  }
+}</pre>
+  </div>
+
+  <p class="muted">Health: <a href="/health">/health</a> · Loader: <a href="/dev-loader.js">/dev-loader.js</a></p>
+</body>
+</html>`);
+}
+
 app.get('/api/runtime', (req, res) => {
   const runtimeFile = path.join(PROJECT_ROOT, '.crank', 'runtime.json');
   if (fs.existsSync(runtimeFile)) {
@@ -222,9 +334,14 @@ app.get('/api/runtime', (req, res) => {
 app.get('/health', (_req, res) => {
   const pending = agentQueue.getPendingAgentTask();
   const status = agentQueue.getAgentQueueStatus();
+  const panelMeta = readPanelVersionMeta();
   res.json({
     ok: true,
     service: 'crank-companion',
+    version: panelMeta.version,
+    panelVersion: panelMeta.version,
+    panelBuild: panelMeta.build,
+    channel: panelMeta.channel,
     port: PORT,
     host: HOST,
     publicUrl: publicCompanionUrl(_req),
@@ -245,6 +362,20 @@ app.get('/health', (_req, res) => {
         }
       : null,
     latestAgentRun: agentRunner.getLatestAgentRun()
+  });
+});
+
+app.get('/api/panel-version', (_req, res) => {
+  const panelMeta = readPanelVersionMeta();
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+    Pragma: 'no-cache'
+  });
+  res.json({
+    ok: true,
+    panelVersion: panelMeta.version,
+    panelBuild: panelMeta.build,
+    channel: panelMeta.channel
   });
 });
 
@@ -314,6 +445,23 @@ app.get('/ui/crank-ui-helpers.js', (_req, res) => {
   res.sendFile(file);
 });
 
+app.get('/ui/glean-logo.png', (_req, res) => {
+  const file =
+    crankAsset('bookmarklet', 'glean-logo.png') ||
+    path.resolve(__dirname, '..', 'bookmarklet', 'glean-logo.png');
+  if (!fs.existsSync(file)) {
+    res.status(404).type('text/plain').send('glean-logo.png not found in package');
+    return;
+  }
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+    Pragma: 'no-cache',
+    Expires: '0'
+  });
+  res.type('image/png');
+  res.sendFile(file);
+});
+
 app.post('/api/save-text', (req, res) => {
   const result = saveTextChange(req.body || {}, PROJECT_ROOT);
   if (!result.success) {
@@ -339,77 +487,12 @@ app.post('/api/preview-text', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/', (req, res) => {
-  const publicUrl = publicCompanionUrl(req);
-  const bookmarkUrl = `${publicUrl}/bookmarklet.js`;
-  const mcpPath = path.resolve(__dirname, '..', 'mcp-server', 'index.js');
-  const runtimeFile = path.join(PROJECT_ROOT, '.crank', 'runtime.json');
-  let mcpEndpoint = '';
-  if (fs.existsSync(runtimeFile)) {
-    try {
-      mcpEndpoint = JSON.parse(fs.readFileSync(runtimeFile, 'utf8'))?.mcp?.endpoint || '';
-    } catch {
-      mcpEndpoint = '';
-    }
-  }
-  res.type('html').send(`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Crank companion</title>
-  <style>
-    body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1.25rem; color: #1a1a1a; line-height: 1.5; }
-    code { background: #f3f3f3; padding: 0.1em 0.35em; border-radius: 4px; }
-    a.bookmarklet { display: inline-block; margin-top: 1rem; padding: 0.55rem 0.9rem; background: #0f766e; color: #fff; text-decoration: none; border-radius: 6px; font-weight: 600; }
-    .muted { color: #555; font-size: 0.95rem; }
-    .card { border: 1px solid #ddd; border-radius: 10px; padding: 1rem 1.1rem; margin: 1.25rem 0; background: #fafafa; }
-    h2 { font-size: 1rem; margin: 0 0 0.4rem; }
-    pre { background: #f3f3f3; padding: 0.75rem 0.9rem; border-radius: 8px; overflow: auto; font-size: 0.82rem; }
-    ol { padding-left: 1.25rem; }
-  </style>
-</head>
-<body>
-  <h1>Crank</h1>
-  <p class="muted">One-command copy iteration — select a <code>div</code>, send text to Glean, apply via MCP.</p>
-  <p>Companion is running at <code>${publicUrl}</code>.</p>
-  <p>Project root: <code>${PROJECT_ROOT}</code></p>
-  ${mcpEndpoint ? `<p>Replit MCP endpoint: <code>${mcpEndpoint}</code></p>` : ''}
-
-  <div class="card">
-    <h2>One command</h2>
-    <p class="muted" style="margin:0">From your app repo run <code>npx crank</code>. Vite apps auto-load the panel on <code>npm run dev</code>.</p>
-  </div>
-
-  <p>Fallback — drag this to your bookmarks bar (works on any page, any environment):</p>
-  <a class="bookmarklet" href="javascript:(function(){var s=document.createElement('script');s.src='${bookmarkUrl}?v='+Date.now();document.documentElement.appendChild(s);})();">Crank</a>
-
-  <div class="card">
-    <h2>Continue in your current Cursor chat</h2>
-    <p class="muted">Panel <strong>Agent</strong> queues structured old→new copy changes on this companion and copies <code>Apply the pending Crank change</code> to the clipboard. Paste that in your <strong>current</strong> Cursor chat — the <code>crank-apply-changes</code> skill pulls via MCP. Cursor has no public API to inject into an open Composer; the optional deeplink opens a <em>new</em> chat.</p>
-    <p class="muted">Optional fully automatic background run: set <code>CURSOR_API_KEY</code> in <code>.env</code>, then use <strong>Run fully automatic</strong> in the panel (SDK/CLI — separate agent, not your open chat).</p>
-    <ol>
-      <li class="muted">Run <code>npx crank</code> / init so <code>.cursor/mcp.json</code> and the skill are installed.</li>
-      <li class="muted">Reload your MCP servers or restart Cursor after updating the config.</li>
-      <li class="muted">In the panel click <strong>Agent</strong>, then paste <code>Apply the pending Crank change</code> in your current Cursor chat (already copied). Skill/tools pull pending changes.</li>
-    </ol>
-    <pre>{
-  "mcpServers": {
-    "crank": {
-      "command": "node",
-      "args": ["${mcpPath}"],
-      "env": {
-        "CRANK_COMPANION_URL": "${publicUrl}",
-        "CRANK_MCP_MODE": "stdio"
-      }
-    }
-  }
-}</pre>
-  </div>
-
-  <p class="muted">Health: <a href="/health">/health</a> · Active selection: <a href="/api/selection">/api/selection</a> · Loader: <a href="/dev-loader.js">/dev-loader.js</a></p>
-</body>
-</html>`);
+/** Single panel demo — edit `panel/demo.html` + `bookmarklet/crank-ui.css`. */
+app.get('/', sendNoCacheDemo);
+app.get('/demo', (_req, res) => {
+  res.redirect(301, '/');
 });
+app.get('/setup', renderSetupPage);
 
 /** Browser / bookmarklet: push a new selection */
 app.post('/api/selection', (req, res) => {
@@ -591,6 +674,49 @@ app.post('/api/preview-variant', (req, res) => {
       preview: true
     });
     res.json({ ok: true, session, variant, persist: false });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+/** Compact copy prompt for panel Copy button (clipboard only; does not enqueue). */
+app.post('/api/copy-prompt', (req, res) => {
+  try {
+    const { sessionId, variantId, nodes, label } = req.body || {};
+    const session = store.getSession(sessionId);
+    if (!session) {
+      res.status(404).json({ ok: false, error: 'No active selection' });
+      return;
+    }
+    if (Array.isArray(nodes) && nodes.length) {
+      const { prompt, changes } = agentQueue.buildCompactCopyPrompt({
+        session,
+        nodes,
+        label: label || 'Manual edits'
+      });
+      res.json({
+        ok: true,
+        prompt,
+        changes,
+        changeCount: Array.isArray(changes) ? changes.length : 0
+      });
+      return;
+    }
+    const variant = (session.variants || []).find((v) => v.id === variantId);
+    if (!variant) {
+      res.status(404).json({ ok: false, error: `Unknown variant: ${variantId}` });
+      return;
+    }
+    const { prompt, changes } = agentQueue.buildCompactCopyPrompt({
+      session,
+      variant
+    });
+    res.json({
+      ok: true,
+      prompt,
+      changes,
+      changeCount: Array.isArray(changes) ? changes.length : 0
+    });
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message });
   }

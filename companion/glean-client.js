@@ -251,7 +251,7 @@ function buildAgentInput(session, options = {}) {
   const feature =
     options.feature ||
     (draft
-      ? `Return exactly ${optionCount} new rewritten alternatives only — do not include the original draft as an option. Label fields like the draft (${labelHint}). Table, no rubric/score columns. No questions.`
+      ? `Return exactly ${optionCount} new rewritten alternatives only — do not include the original draft as an option. Label fields like the draft (${labelHint}). Each field value must be UI copy only — no inline scores (Strong/Weak/Good), no rationale about the draft, no pipe rubric columns. Table only. No questions.`
       : `Return exactly ${optionCount} new UI copy alternatives only (not the original draft). No clarifying questions.`);
 
   return {
@@ -288,9 +288,37 @@ function extractMessageText(data) {
 /**
  * Robot Content Designer tables append rubric/score cells after Heading/Body/CTA:
  *   |Good …|No Pattern|Weak …|
+ * Inline scores also appear after field labels:
+ *   Copy 3: Strong Fixes the … from the draft, and "Actual copy" reads instantly…
  * Those are evaluation notes — never user-facing copy.
  */
 const SCORE_CELL_RE = /\|\s*(?:Good|Weak|No\s+Pattern)\b/i;
+const INLINE_SCORE_PREFIX_RE =
+  /^(?:(?:Strong|Weak|Good|Fair|Poor|Excellent|Acceptable|No\s+Pattern)\s*[-–—:]?\s*)+/i;
+const META_RATIONALE_RE =
+  /\b(?:fixes?|addresses?|corrects?|resolves?)\s+the\b|\bfrom the draft\b|\breads instantly\b|\brequiring the user\b|\bsingular\/plural\b|\bthis option\b|\bthe draft\b|\bwithout requiring\b/i;
+
+function trimTableCell(value) {
+  return stripCellDelimiterArtifacts(
+    String(value || '')
+      .replace(/\s*\|\s*$/g, '')
+      .replace(/^\s*\|\s*/g, '')
+      .trim()
+  );
+}
+
+/** Strip markdown table cell delimiter junk (pipes, stray slashes/backslashes at edges). */
+function stripCellDelimiterArtifacts(text) {
+  let s = String(text || '').trim();
+  if (!s) return '';
+  // Trailing row/cell markers — require whitespace before "/" so "50/50" stays intact.
+  s = s.replace(/\s+\/\s*$/g, '').replace(/\\+\s*$/g, '');
+  // Leading escaped line breaks from broken table cells.
+  s = s.replace(/^\s*\\+/g, '');
+  // Residual pipe fragments at edges (after trimTableCell pass).
+  s = s.replace(/^\s*\|+\s*/g, '').replace(/\s*\|+\s*$/g, '');
+  return s.trim();
+}
 
 function splitCopyAndScores(block) {
   const text = String(block || '');
@@ -298,24 +326,89 @@ function splitCopyAndScores(block) {
   if (!m || m.index == null) return { copy: text, scores: '' };
   return {
     copy: text.slice(0, m.index),
-    scores: text
-      .slice(m.index)
-      .replace(/^\|/, '')
-      .replace(/\s*\|\s*/g, ' · ')
-      .replace(/\s+/g, ' ')
-      .trim()
+    scores: stripCellDelimiterArtifacts(
+      text
+        .slice(m.index)
+        .replace(/^\|+/, '')
+        .replace(/\s*\|\s*/g, ' · ')
+        .replace(/\s+/g, ' ')
+        .trim()
+    )
   };
+}
+
+function stripInlineScorePrefix(text) {
+  return String(text || '')
+    .replace(INLINE_SCORE_PREFIX_RE, '')
+    .trim();
+}
+
+/** Pull UI copy embedded in agent rationale, e.g. … and "This month vs. last month" reads instantly… */
+function extractEmbeddedQuotedCopy(text) {
+  const s = String(text || '');
+  const andReads = s.match(
+    /\band\s+"([^"]{2,200})"\s+(?:reads|is|was|sounds|works|feels|stays)\b/i
+  );
+  if (andReads && !META_RATIONALE_RE.test(andReads[1])) {
+    return andReads[1].trim();
+  }
+  const quotes = [...s.matchAll(/"([^"]{2,200})"/g)].map((m) => m[1].trim());
+  for (let i = quotes.length - 1; i >= 0; i--) {
+    const q = quotes[i];
+    if (q.length <= 120 && !META_RATIONALE_RE.test(q)) return q;
+  }
+  return null;
+}
+
+/** Drop agent rubric prose; keep only copy meant for the UI. */
+function stripRationaleProse(text) {
+  let s = stripInlineScorePrefix(text);
+  if (!s) return '';
+  if (!META_RATIONALE_RE.test(s)) return s;
+
+  const embedded = extractEmbeddedQuotedCopy(s);
+  if (embedded) return embedded;
+
+  const tailParts = s.split(/\s*,\s*and\s+/i);
+  if (tailParts.length > 1) {
+    const tail = tailParts[tailParts.length - 1]
+      .replace(/^["']|["']$/g, '')
+      .replace(/\s+(?:reads|is|was|sounds|works|feels|stays)\b.*$/i, '')
+      .trim();
+    if (tail.length >= 2 && tail.length <= 160 && !META_RATIONALE_RE.test(tail)) {
+      return tail;
+    }
+  }
+
+  const sentences = s
+    .split(/(?<=[.!?])\s+/)
+    .map((sent) => sent.trim())
+    .filter((sent) => sent && !META_RATIONALE_RE.test(sent));
+  if (sentences.length) return sentences.join(' ').trim();
+  return s;
 }
 
 function cleanCopyField(value) {
   const { copy } = splitCopyAndScores(value);
-  return String(copy || '')
-    .replace(/\|\s*\*{0,2}Option\s+\d+.*$/i, '')
-    .replace(/\|+\s*$/g, '')
-    .replace(/\*{1,2}/g, '')
-    .replace(/^["'\s]+|["'\s]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return stripRationaleProse(
+    trimTableCell(
+      String(copy || '')
+        .replace(/\|\s*\*{0,2}Option\s+\d+.*$/i, '')
+        .replace(/\|+\s*$/g, '')
+        .replace(/\*{1,2}/g, '')
+        .replace(/^["'\s]+|["'\s]+$/g, '')
+        .replace(/\s+/g, ' ')
+    )
+  );
+}
+
+/** Agent rubric / explanation stripped from a field (for feedback UI). */
+function extractFieldRationale(value) {
+  const raw = trimTableCell(value);
+  if (!raw || !META_RATIONALE_RE.test(raw)) return '';
+  const cleaned = cleanCopyField(raw);
+  if (normalizeWs(cleaned) === normalizeWs(raw)) return '';
+  return trimTableCell(stripInlineScorePrefix(raw)).slice(0, 400);
 }
 
 /**
@@ -343,7 +436,8 @@ function parseLabeledCopyFields(block) {
   const out = [];
   for (let i = 0; i < hits.length; i++) {
     const valueEnd = i + 1 < hits.length ? hits[i + 1].labelStart : text.length;
-    const value = cleanCopyField(text.slice(hits[i].valueStart, valueEnd));
+    const rawValue = trimTableCell(text.slice(hits[i].valueStart, valueEnd));
+    const value = cleanCopyField(rawValue);
     if (!value) continue;
     const lower = hits[i].rawLabel.toLowerCase();
     let role = 'text';
@@ -365,7 +459,8 @@ function parseLabeledCopyFields(block) {
       key,
       role,
       label: hits[i].rawLabel,
-      text: value
+      text: value,
+      rawText: rawValue
     });
   }
   return out;
@@ -374,10 +469,16 @@ function parseLabeledCopyFields(block) {
 function fieldsFromLabeled(labeled) {
   const fields = {};
   const bodies = [];
+  const copies = [];
   for (const f of labeled) {
     if (f.key === 'heading' && fields.heading == null) fields.heading = f.text;
     else if (f.key === 'cta' && fields.cta == null) fields.cta = f.text;
     else if (f.key === 'body') bodies.push(f.text);
+    else if (/^copy\d+$/.test(f.key)) copies.push(f.text);
+  }
+  if (copies.length) {
+    fields.copies = copies;
+    if (copies.length === 1) fields.copy1 = copies[0];
   }
   if (bodies.length === 1) fields.body = bodies[0];
   else if (bodies.length > 1) {
@@ -400,14 +501,20 @@ function assignmentListFromFields(fields = {}, labeled = null) {
   if (fields.heading) {
     list.push({ role: 'heading', value: cleanCopyField(fields.heading) });
   }
-  const bodies = Array.isArray(fields.bodies)
-    ? fields.bodies
-    : fields.body
-      ? [fields.body]
-      : [];
-  for (const b of bodies) {
-    const value = cleanCopyField(b);
+  if (Array.isArray(fields.bodies) && fields.bodies.length) {
+    for (const b of fields.bodies) {
+      const value = cleanCopyField(b);
+      if (value) list.push({ role: 'text', value });
+    }
+  } else if (fields.body) {
+    const value = cleanCopyField(fields.body);
     if (value) list.push({ role: 'text', value });
+  }
+  if (Array.isArray(fields.copies) && fields.copies.length) {
+    for (const c of fields.copies) {
+      const value = cleanCopyField(c);
+      if (value) list.push({ role: 'text', value });
+    }
   }
   if (fields.cta) {
     list.push({ role: 'action', value: cleanCopyField(fields.cta) });
@@ -575,8 +682,10 @@ function parseOptionsFromText(text, session, maxOptions = DEFAULT_OPTION_COUNT) 
 
     if (isOriginalVariant(headerMeta, mapped, nodes)) continue;
 
-    // Summary is user-facing preview — clean Heading/Body/CTA only (never rubric cells).
-    const summaryParts = labeled.map((f) => f.text).filter(Boolean);
+    const rationales = labeled
+      .map((f) => extractFieldRationale(f.rawText || f.text))
+      .filter(Boolean);
+    const summaryParts = labeled.map((f) => cleanCopyField(f.text)).filter(Boolean);
 
     const variant = {
       id: `glean-option-${num}`,
@@ -586,7 +695,8 @@ function parseOptionsFromText(text, session, maxOptions = DEFAULT_OPTION_COUNT) 
       nodes: mapped,
       recommended
     };
-    if (scores) variant.scores = scores.slice(0, 400);
+    const feedback = [scores, ...rationales].filter(Boolean).join(' · ').trim();
+    if (feedback) variant.scores = feedback.slice(0, 400);
     variants.push(variant);
   }
 

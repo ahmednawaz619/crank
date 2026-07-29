@@ -228,4 +228,67 @@ const copyUnitsMd = `
   assert.match(feature, /do not include the original draft/i);
 }
 
+// Inline Strong/Weak score + rationale must not land in Copy N / Body fields
+const inlineScoreMd = `
+| **Option 2 (AI-written) ✅ Recommended** | Copy 1: Vehicle<br>Copy 2: Assets this month<br>Copy 3: Strong Fixes the singular/plural mismatch ("Vehicle" + "assets") from the draft, and "This month vs. last month" reads instantly without requiring the user to parse an abbreviation. |
+`;
+
+{
+  const session = {
+    nodes: [
+      { path: '0', role: 'text', selector: 'p:1', text: 'Vehicle' },
+      { path: '1', role: 'text', selector: 'p:2', text: 'Assets this month' },
+      {
+        path: '2',
+        role: 'text',
+        selector: 'p:3',
+        text: 'This month vs last month'
+      }
+    ]
+  };
+  const variants = parseOptionsFromText(inlineScoreMd, session);
+  assert.ok(variants.length >= 1, 'inline score: expected >=1 option');
+  const v1 = variants.find((v) => v.id === 'glean-option-1');
+  assert.ok(v1, 'inline score: option 1');
+  assert.strictEqual(v1.nodes[0].text, 'Vehicle');
+  assert.strictEqual(v1.nodes[1].text, 'Assets this month');
+  assert.strictEqual(
+    v1.nodes[2].text,
+    'This month vs. last month',
+    'Copy 3 must be UI copy only, not Strong/rationale prose'
+  );
+  assert.ok(
+    !/Fixes the singular|from the draft|reads instantly/i.test(v1.nodes[2].text),
+    'Copy 3 must not include agent rationale'
+  );
+  assert.ok(v1.scores && /Fixes the singular|from the draft/i.test(v1.scores), 'rationale preserved in scores');
+  assert.ok(!/\|\s*$/.test(v1.scores), 'scores must not include trailing table pipe');
+  assert.ok(!/^Strong\b/i.test(v1.scores), 'scores should not lead with inline score prefix');
+}
+
+// Trailing table-cell slashes/backslashes must not appear in copy fields
+{
+  const session = {
+    nodes: [
+      { path: '0', role: 'text', text: 'Vehicle' },
+      { path: '1', role: 'text', text: 'Assets this month' },
+      { path: '2', role: 'text', text: 'This month vs last month' }
+    ]
+  };
+  const slashMd = `
+| **Option 2 (AI-written) ✅ Recommended** | Copy 1: Vehicle<br>Copy 2: Assets this month<br>Copy 3: This month vs. last month / |
+`;
+  const variants = parseOptionsFromText(slashMd, session);
+  const v1 = variants.find((v) => v.id === 'glean-option-1');
+  assert.ok(v1, 'slash: option 1');
+  assert.strictEqual(v1.nodes[2].text, 'This month vs. last month');
+  assert.ok(!/\/\s*$/.test(v1.nodes[2].text), 'copy must not end with table slash');
+  const backslashMd = `
+| **Option 2 (AI-written)** | Copy 1: Hello world\\ |
+`;
+  const v2 = parseOptionsFromText(backslashMd, session)[0];
+  assert.strictEqual(v2.nodes[0].text, 'Hello world');
+  assert.ok(String(v2.nodes[0].text).indexOf('\\') === -1, 'copy must not retain trailing backslash');
+}
+
 console.log('ok — parse options keep clean field labels (scores stripped)');

@@ -5,7 +5,10 @@
  * Loads the Crank panel from the companion that served this script.
  */
 (function () {
-  if (window.__CRANK_LOADER__) {
+  if (
+    window.__CRANK_LOADER__ &&
+    (document.getElementById('vp-shell') || document.getElementById('vp-crank-reopen'))
+  ) {
     return;
   }
   window.__CRANK_LOADER__ = true;
@@ -33,7 +36,11 @@
   } catch (e) {
     origin = 'http://127.0.0.1:3344';
   }
+  window.__CRANK_COMPANION__ = origin;
   script.src = origin + '/bookmarklet.js?t=' + Date.now();
   script.async = true;
+  script.onerror = function () {
+    console.error('[Crank] Failed to load bookmarklet from', script.src);
+  };
   document.documentElement.appendChild(script);
 })();

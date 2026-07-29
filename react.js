@@ -96,7 +96,11 @@ function Crank(props) {
     if (typeof document === 'undefined') {
       return undefined;
     }
-    if (document.getElementById('vp-shell') || document.getElementById('vp-crank-reopen')) {
+    if (
+      document.getElementById('vp-shell') ||
+      document.getElementById('vp-crank-fab') ||
+      document.getElementById('vp-crank-reopen')
+    ) {
       return undefined;
     }
     if (document.querySelector('script[data-crank-loader="1"]')) {
@@ -108,7 +112,12 @@ function Crank(props) {
     try {
       import('./panel-boot.mjs')
         .then(function (mod) {
-          if (document.getElementById('vp-shell')) return;
+          if (
+            document.getElementById('vp-shell') ||
+            document.getElementById('vp-crank-fab')
+          ) {
+            return;
+          }
           mod.bootCrankPanel({ companionUrl: companionUrl });
         })
         .catch(function () {

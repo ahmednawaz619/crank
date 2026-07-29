@@ -70,6 +70,17 @@ export function resolveCrankCompanionUrl(props = {}) {
   if (replit) {
     return replit;
   }
+  try {
+    const envCh =
+      typeof import.meta !== 'undefined' &&
+      import.meta.env &&
+      import.meta.env.VITE_CRANK_CHANNEL;
+    if (String(envCh || '').toLowerCase() === 'preview') {
+      return 'http://127.0.0.1:3346';
+    }
+  } catch {
+    // ignore
+  }
   return 'http://127.0.0.1:3344';
 }
 
@@ -127,7 +138,11 @@ export function Crank(props = {}) {
     if (!isDevMode(props.force)) {
       return undefined;
     }
-    if (document.getElementById('vp-shell') || document.getElementById('vp-crank-reopen')) {
+    if (
+      document.getElementById('vp-shell') ||
+      document.getElementById('vp-crank-fab') ||
+      document.getElementById('vp-crank-reopen')
+    ) {
       return undefined;
     }
 
@@ -151,6 +166,31 @@ export function Crank(props = {}) {
   }, [props.companionUrl, props.url, props.src, props.force]);
 
   return null;
+}
+
+/** Dev: re-boot FAB/panel when panel-source.mjs is re-embedded (watch-panel.js). */
+if (typeof import.meta !== 'undefined' && import.meta.hot) {
+  import.meta.hot.accept('./panel-boot.mjs', (mod) => {
+    const shell = document.getElementById('vp-shell');
+    if (shell && shell.querySelector('#vc-glean')) {
+      return;
+    }
+    if (typeof window.__crankTeardown === 'function') {
+      try {
+        window.__crankTeardown();
+      } catch {
+        /* ignore */
+      }
+    }
+    window.__CRANK_BOOTING__ = false;
+    window.__CRANK_LOADER__ = false;
+    const boot = mod.bootCrankPanel || mod.default;
+    boot({
+      companionUrl:
+        (typeof window !== 'undefined' && window.__CRANK_COMPANION__) ||
+        resolveCrankCompanionUrl({})
+    });
+  });
 }
 
 /** Explicit alias. */

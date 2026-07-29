@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Crank panel demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Crank — panel demo</title>
   <style>
     :root {
       --ink: #1a1a1a;
@@ -54,9 +55,22 @@
       <button type="button">Get started</button>
     </div>
     <p class="hint">
-      Start the companion (<code>npm run companion</code>), load the Crank bookmarklet,
-      click <strong>Select</strong>, then click this card’s outer <code>div</code>.
+      Crank panel loads automatically. Click <strong>Select</strong>, then click this card’s outer <code>div</code>.
+      Setup docs: <a href="/setup">/setup</a>
     </p>
   </main>
+  <script>
+    window.__CRANK_COMPANION__ = location.origin.replace(/\/$/, '');
+    window.addEventListener('pageshow', function (ev) {
+      if (ev.persisted && !document.getElementById('vp-shell') && !document.getElementById('vp-crank-reopen')) {
+        window.__CRANK_LOADER__ = false;
+        window.__crankTeardown = null;
+        var s = document.createElement('script');
+        s.src = '/bookmarklet.js?t=' + Date.now();
+        document.documentElement.appendChild(s);
+      }
+    });
+  </script>
+  <script src="/bookmarklet.js"></script>
 </body>
 </html>

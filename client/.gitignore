@@ -1,0 +1,6 @@
+
+.env
+.env.local
+.crank/secrets.json
+.crank/runtime.json
+node_modules/

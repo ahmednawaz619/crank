@@ -3,10 +3,18 @@
  * Preview (DOM) vs Save (source via SAVE_TEXT_CHANGE) uses Crank text dispatch.
  */
 (function () {
-  // Allow re-drag / re-inject to pick up companion updates.
+  // Hot re-inject only — skip on fresh page load (fixes refresh / bfcache).
   if (typeof window.__crankTeardown === 'function') {
     try {
-      window.__crankTeardown();
+      if (
+        document.getElementById('vp-shell') ||
+        document.getElementById('vp-crank-fab') ||
+        document.getElementById('vp-crank-reopen')
+      ) {
+        window.__crankTeardown();
+      } else {
+        window.__crankTeardown = null;
+      }
     } catch (_) {
       /* ignore */
     }
@@ -105,39 +113,164 @@
     }
   }
 
+  /** Local dev: sync CRANK_TEAM_TOKEN from Vite (.env) into browser storage once. */
+  function seedDevTeamToken() {
+    try {
+      const devToken = String(window.__CRANK_DEV_TEAM_TOKEN__ || '').trim();
+      if (devToken && !getTeamToken()) {
+        setTeamToken(devToken);
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  async function verifyTeamToken(token) {
+    const value = String(token || '').trim();
+    if (!value) return false;
+    const verify = await fetch(COMPANION_HTTP + '/api/auth/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: value })
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .catch(function () {
+        return { ok: false };
+      });
+    return !!(verify && verify.ok);
+  }
+
   async function ensureTeamToken() {
+    seedDevTeamToken();
     const status = await fetch(COMPANION_HTTP + '/api/auth/status').then(function (r) {
       return r.json();
     }).catch(function () {
       return { teamAuthRequired: false };
     });
     if (!status.teamAuthRequired) {
+      hideTeamAuthUI();
       return true;
     }
-    if (getTeamToken()) {
+    const stored = getTeamToken();
+    if (stored && (await verifyTeamToken(stored))) {
+      hideTeamAuthUI();
       return true;
     }
-    const entered = window.prompt(
-      status.hint ||
-        'Enter the Crank team token (ask your team lead):'
-    );
-    if (!entered) {
+    if (stored) {
+      setTeamToken('');
+    }
+    return false;
+  }
+
+  let teamAuthFab = null;
+  let pendingSelectionPayload = null;
+
+  function ensureTeamAuthFab() {
+    if (teamAuthFab && teamAuthFab.parentNode) return teamAuthFab;
+    const ui = UI();
+    const btn = ui.vpButtonHtml || function (_v, label, attrs) {
+      return (
+        '<button type="button" id="' +
+        (attrs && attrs.id ? attrs.id : '') +
+        '">' +
+        label +
+        '</button>'
+      );
+    };
+    teamAuthFab = document.createElement('div');
+    teamAuthFab.id = 'vp-crank-team-auth';
+    teamAuthFab.className = 'vp-crank-team-auth';
+    teamAuthFab.innerHTML =
+      '<div class="vp-type-label" style="font-weight:620;margin-bottom:6px;">Team token</div>' +
+      '<p class="vp-muted vp-type-micro" style="margin:0 0 8px;line-height:1.45;">Paste the same value as <code>CRANK_TEAM_TOKEN</code> in your <code>.env</code>.</p>' +
+      '<input type="password" id="vc-fab-team-token" class="vp-crank-team-auth-input" placeholder="Crank-…" autocomplete="off" />' +
+      btn('primary', 'Save token', { id: 'vc-fab-team-token-save' }, { size: 'compact', flex: true });
+    document.documentElement.appendChild(teamAuthFab);
+    const saveBtn = teamAuthFab.querySelector('#vc-fab-team-token-save');
+    const input = teamAuthFab.querySelector('#vc-fab-team-token');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', function () {
+        saveTeamTokenFromInput(input);
+      });
+    }
+    if (input) {
+      input.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') saveTeamTokenFromInput(input);
+      });
+    }
+    return teamAuthFab;
+  }
+
+  function showTeamAuthUI(surface) {
+    const where = surface || (uiMode === 'panel' ? 'panel' : 'fab');
+    if (where === 'fab' || where === 'both') {
+      ensureTeamAuthFab();
+      if (teamAuthFab) teamAuthFab.style.display = 'block';
+    }
+    if (where === 'panel' || where === 'both') {
+      ensurePanelMounted();
+      const box = panel.querySelector('#vc-team-auth');
+      if (box) box.style.display = 'block';
+    }
+  }
+
+  function hideTeamAuthUI() {
+    if (teamAuthFab) teamAuthFab.style.display = 'none';
+    const box = panel && panel.querySelector('#vc-team-auth');
+    if (box) box.style.display = 'none';
+  }
+
+  async function registerSelection(payload) {
+    if (sendWs({ type: 'SET_SELECTION', payload: payload })) {
+      /* SELECTION_ACK or POST sets sessionId */
+    }
+    const data = await postJson('/api/selection', payload);
+    if (data.ok && data.session) {
+      applySessionFromServer(data.session);
+      setStatus('Selection ready — preview/edit or Ask Glean');
+      return true;
+    }
+    return false;
+  }
+
+  async function retryPendingSelection() {
+    if (!pendingSelectionPayload) return;
+    const payload = pendingSelectionPayload;
+    pendingSelectionPayload = null;
+    try {
+      await registerSelection(payload);
+    } catch (err) {
+      pendingSelectionPayload = payload;
+      const msg = err && err.message ? String(err.message) : 'Selection failed';
+      showToast(msg, 'error');
+      setStatus('Selection error: ' + msg);
+      syncGleanButton();
+    }
+  }
+
+  async function saveTeamTokenFromInput(inputEl) {
+    const input = inputEl || (panel && panel.querySelector('#vc-team-token'));
+    const token = input ? String(input.value || '').trim() : '';
+    if (!token) {
+      showToast('Paste your team token first', 'error');
       return false;
     }
-    const verify = await fetch(COMPANION_HTTP + '/api/auth/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: entered.trim() })
-    }).then(function (r) {
-      return r.json();
-    }).catch(function () {
-      return { ok: false };
-    });
-    if (!verify.ok) {
-      window.alert('Invalid Crank team token');
+    if (!(await verifyTeamToken(token))) {
+      showToast('Invalid team token — check CRANK_TEAM_TOKEN in .env', 'error');
       return false;
     }
-    setTeamToken(entered.trim());
+    setTeamToken(token);
+    hideTeamAuthUI();
+    showToast('Team token saved — Ask Glean is now available', 'ok');
+    try {
+      connectWs();
+    } catch (_) {}
+    await retryPendingSelection();
+    if (typeof window.__crankProbeCompanion === 'function') {
+      await window.__crankProbeCompanion();
+    }
     return true;
   }
 
@@ -215,6 +348,10 @@
   /** Bumps on each Ask Glean; stale WS progress after variants must not reopen thinking. */
   let gleanEpoch = 0;
   let gleanActiveEpoch = 0;
+  /** fab = logo only · selecting = pick layout · panel = full editor */
+  let uiMode = 'fab';
+  let fab = null;
+  let selectHint = null;
   const OPTION_COUNT_KEY = 'crank.gleanOptionCount';
   const DEFAULT_GLEAN_OPTION_COUNT = 3;
 
@@ -298,11 +435,401 @@
   // Short phrase for the *current* Cursor chat — paste once; skill/MCP pulls pending.
   // Cursor has no public API to inject into an open Composer; deeplink opens a *new* chat.
   const AGENT_SHORT_PROMPT = 'Apply the pending Crank change';
+  const COMPANION_AGENT_PHRASE = 'Start the Crank companion';
+  const PASTE_IN_AGENT_CHAT = 'paste in your agent chat';
   const CURSOR_DEEPLINK_MAX = 7800;
 
+  function isReplitHost() {
+    try {
+      return /\.replit\.dev$|\.repl\.co$|\.replit\.app$/i.test(
+        String(window.location.hostname || '')
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function normalizePanelChannel(raw) {
+    const s = String(raw || 'production')
+      .trim()
+      .toLowerCase();
+    if (s === 'preview' || s === 'beta' || s === 'staging') {
+      return 'preview';
+    }
+    return 'production';
+  }
+
+  function getPanelChannel() {
+    return normalizePanelChannel(
+      window.__CRANK_PANEL_CHANNEL__ ||
+        window.__CRANK_CHANNEL__ ||
+        (document.querySelector('script[data-crank-bundled="1"]') &&
+          document
+            .querySelector('script[data-crank-bundled="1"]')
+            .getAttribute('data-crank-panel-channel')) ||
+        'production'
+    );
+  }
+
+  function companionStartCommand() {
+    if (getPanelChannel() === 'preview') {
+      return isReplitHost()
+        ? 'npx @ahmednawaz/crank@preview start --preview'
+        : 'npx @ahmednawaz/crank@preview --preview';
+    }
+    return isReplitHost()
+      ? 'npx @ahmednawaz/crank start'
+      : 'npx @ahmednawaz/crank';
+  }
+
+  function companionFirstTimeCommand() {
+    if (getPanelChannel() === 'preview') {
+      return 'npx @ahmednawaz/crank@preview --preview';
+    }
+    return 'npx @ahmednawaz/crank@latest';
+  }
+
+  function updateCompanionOfflineCopy() {
+    const cmdEl = panel && panel.querySelector('#vc-companion-cmd');
+    const agentEl = panel && panel.querySelector('#vc-companion-agent-phrase');
+    if (cmdEl) cmdEl.textContent = companionStartCommand();
+    if (agentEl) agentEl.textContent = COMPANION_AGENT_PHRASE;
+  }
+
+  function showCompanionOfflineUI() {
+    if (!panel || uiMode !== 'panel') return;
+    ensurePanelMounted();
+    updateCompanionOfflineCopy();
+    const box = panel.querySelector('#vc-companion-offline');
+    if (box) box.style.display = 'block';
+  }
+
+  function hideCompanionOfflineUI() {
+    const box = panel && panel.querySelector('#vc-companion-offline');
+    if (box) box.style.display = 'none';
+  }
+
+  async function retryCompanionConnection() {
+    setStatus('Checking companion…');
+    showToast('Checking companion…', 'info');
+    const probe =
+      typeof window.__crankProbeCompanion === 'function'
+        ? window.__crankProbeCompanion
+        : null;
+    if (!probe) {
+      showToast('Companion check unavailable — reload the page', 'error');
+      return;
+    }
+    const ok = await probe();
+    if (ok) {
+      hideCompanionOfflineUI();
+      showToast('Companion connected — you can Ask Glean', 'ok');
+      syncGleanButton();
+      try {
+        connectWs();
+      } catch (_) {}
+      checkPanelUpdate(COMPANION_HTTP, { quiet: true });
+    } else {
+      showToast(
+        'Still offline — run the terminal command below or paste the agent phrase in Cursor chat',
+        'error'
+      );
+    }
+  }
+
+  function parseSemverPart(version) {
+    const m = String(version || '0.0.0').match(/^(\d+)\.(\d+)\.(\d+)/);
+    if (!m) return [0, 0, 0];
+    return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+  }
+
+  function semverGreater(a, b) {
+    const aa = parseSemverPart(a);
+    const bb = parseSemverPart(b);
+    for (let i = 0; i < 3; i++) {
+      if (aa[i] > bb[i]) return true;
+      if (aa[i] < bb[i]) return false;
+    }
+    return false;
+  }
+
+  function panelInUse() {
+    return (
+      selecting ||
+      uiMode === 'panel' ||
+      !!sessionId ||
+      !!selectedEl ||
+      !!pendingSelectionPayload
+    );
+  }
+
+  function panelAutoUpdateEnabled() {
+    if (window.__CRANK_PANEL_AUTO_UPDATE__ === false) return false;
+    if (window.__CRANK_PANEL_UPDATE_DISABLED__) return false;
+    if (window.__CRANK_PANEL_UPDATE_RELOAD__) return false;
+    return !!document.querySelector('script[data-crank-bundled="1"]');
+  }
+
+  function reloadPanelFromCompanion(companionUrl, remoteVersion) {
+    if (panelInUse()) {
+      return;
+    }
+    const base = String(companionUrl || COMPANION_HTTP).replace(/\/$/, '');
+    window.__CRANK_COMPANION__ = base;
+    window.__CRANK_PANEL_UPDATE_RELOAD__ = true;
+    showToast('Updating Crank panel to v' + (remoteVersion || 'latest') + '…', 'info');
+    setStatus('Updating Crank panel…');
+    if (typeof window.__crankTeardown === 'function') {
+      try {
+        window.__crankTeardown();
+      } catch (_) {}
+    }
+    document.querySelectorAll('script[data-crank-loader="1"]').forEach(function (el) {
+      try {
+        el.remove();
+      } catch (_) {}
+    });
+    window.__CRANK_LOADER__ = false;
+    window.__CRANK_BOOTING__ = false;
+    window.__crankActive = false;
+    const s = document.createElement('script');
+    s.src =
+      base +
+      '/bookmarklet.js?v=' +
+      encodeURIComponent(remoteVersion || String(Date.now()));
+    s.async = true;
+    s.dataset.crankLoader = '1';
+    s.onerror = function () {
+      showToast(
+        'Panel update failed — refresh the page or run npm update @ahmednawaz/crank',
+        'error'
+      );
+      setStatus('Panel update failed — refresh the page');
+    };
+    document.documentElement.appendChild(s);
+  }
+
+  async function checkPanelUpdate(companionUrl, options) {
+    const opts = options || {};
+    if (!panelAutoUpdateEnabled()) return false;
+    if (panelInUse()) return false;
+    const localVersion = window.__CRANK_PANEL_VERSION__ || '0.0.0';
+    const base = String(companionUrl || COMPANION_HTTP).replace(/\/$/, '');
+    try {
+      const resp = await fetch(base + '/health', {
+        cache: 'no-store',
+        headers: authHeaders()
+      });
+      const data = await resp.json().catch(function () {
+        return {};
+      });
+      if (!resp.ok || !data || data.ok === false) return false;
+      const remoteVersion =
+        data.panelVersion || data.version || localVersion;
+      const remoteChannel = normalizePanelChannel(data.channel || 'production');
+      const localChannel = getPanelChannel();
+      window.__CRANK_COMPANION_PANEL_VERSION__ = remoteVersion;
+      if (localChannel !== remoteChannel) {
+        return false;
+      }
+      if (!semverGreater(remoteVersion, localVersion)) {
+        return false;
+      }
+      if (!opts.quiet) {
+        console.info(
+          '[Crank] Panel update available:',
+          localVersion,
+          '→',
+          remoteVersion
+        );
+      }
+      reloadPanelFromCompanion(base, remoteVersion);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function schedulePanelAutoUpdate(companionUrl) {
+    if (!panelAutoUpdateEnabled()) return;
+    if (window.__CRANK_PANEL_UPDATE_SCHEDULED__) return;
+    window.__CRANK_PANEL_UPDATE_SCHEDULED__ = true;
+    const base = String(companionUrl || COMPANION_HTTP).replace(/\/$/, '');
+    const intervalMs = Number(window.__CRANK_PANEL_UPDATE_INTERVAL_MS || 300000);
+    function tick() {
+      checkPanelUpdate(base, { quiet: true });
+    }
+    if (window.__CRANK_PANEL_UPDATE_TIMER__) {
+      clearInterval(window.__CRANK_PANEL_UPDATE_TIMER__);
+    }
+    window.__CRANK_PANEL_UPDATE_TIMER__ = setInterval(tick, intervalMs);
+    if (!window.__CRANK_PANEL_VISIBILITY_BOUND__) {
+      window.__CRANK_PANEL_VISIBILITY_BOUND__ = true;
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') {
+          tick();
+        }
+      });
+    }
+  }
+
+  function getFabLogoUrl() {
+    if (window.__CRANK_GLEAN_LOGO__) {
+      return String(window.__CRANK_GLEAN_LOGO__);
+    }
+    return assetUrl('glean-logo.png', '/ui/glean-logo.png');
+  }
+
+  function isCrankChrome(el) {
+    if (!(el instanceof Element)) return false;
+    return !!(
+      el.closest('#vp-shell') ||
+      el.closest('#vp-crank-fab') ||
+      el.closest('#vp-crank-select-hint') ||
+      el.id === 'crank-highlight'
+    );
+  }
+
+  function ensureFab() {
+    if (fab && fab.parentNode) return fab;
+    fab = document.createElement('button');
+    fab.id = 'vp-crank-fab';
+    fab.type = 'button';
+    fab.className = 'vp-crank-fab';
+    fab.setAttribute('aria-label', 'Crank — select copy to edit');
+    fab.innerHTML =
+      '<img src="' +
+      getFabLogoUrl().replace(/"/g, '&quot;') +
+      '" alt="" draggable="false" width="36" height="36" />';
+    fab.addEventListener('click', function (ev) {
+      if (ev && ev.preventDefault) ev.preventDefault();
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+      if (uiMode === 'selecting' || uiMode === 'panel') return;
+      startSelectFromFab();
+    });
+    document.documentElement.appendChild(fab);
+    return fab;
+  }
+
+  function showFab() {
+    ensureFab();
+    if (fab) fab.style.display = '';
+  }
+
+  function hideFab() {
+    if (fab) fab.style.display = 'none';
+  }
+
+  function setFabActive(active) {
+    if (!fab) return;
+    fab.classList.toggle('vp-crank-fab--active', !!active);
+  }
+
+  function showSelectHint(text) {
+    const msg = String(text || '').trim();
+    if (!msg) {
+      hideSelectHint();
+      return;
+    }
+    if (!selectHint) {
+      selectHint = document.createElement('div');
+      selectHint.id = 'vp-crank-select-hint';
+      selectHint.className = 'vp-crank-select-hint';
+      selectHint.setAttribute('role', 'status');
+      document.documentElement.appendChild(selectHint);
+    }
+    selectHint.textContent = msg;
+    selectHint.style.display = 'block';
+  }
+
+  function hideSelectHint() {
+    if (selectHint) selectHint.style.display = 'none';
+  }
+
+  function startSelectFromFab() {
+    if (selecting || uiMode === 'panel') return;
+    uiMode = 'selecting';
+    setFabActive(true);
+    showSelectHint('Click a layout on the page · Esc to cancel');
+    startSelect();
+  }
+
+  function cancelSelectionMode() {
+    stopSelect();
+    uiMode = 'fab';
+    setFabActive(false);
+    hideSelectHint();
+  }
+
+  function ensurePanelMounted() {
+    if (!panel.querySelector('#vc-glean')) {
+      buildPanelShell();
+    }
+    if (!panel.parentNode) {
+      document.documentElement.appendChild(panel);
+    }
+  }
+
+  function openPanelAfterSelection() {
+    uiMode = 'panel';
+    setFabActive(false);
+    hideSelectHint();
+    hideFab();
+    ensurePanelMounted();
+  }
+
+  function resetSessionState() {
+    selectedEl = null;
+    selectedNodes = [];
+    sessionId = null;
+    lastVariants = [];
+    activeVariantId = null;
+    originalSnapshot = [];
+    hideAgentHandoff();
+    hideThinking();
+  }
+
+  function syncGleanButton() {
+    const glean = panel && panel.querySelector('#vc-glean');
+    if (!glean) return;
+    const online = window.__CRANK_COMPANION_ONLINE__ !== false;
+    glean.disabled = !sessionId || !online;
+    glean.title = !online
+      ? 'Companion offline — use Retry below or run: ' + companionStartCommand()
+      : sessionId
+        ? 'Ask Glean for rewritten copy alternatives'
+        : 'Select copy on the page first';
+  }
+
+  function applySessionFromServer(session) {
+    if (!session || !session.id) return false;
+    sessionId = session.id;
+    syncGleanButton();
+    return true;
+  }
+
+  function closePanel() {
+    stopSelect();
+    hideSelectHint();
+    restoreOriginal();
+    resetSessionState();
+    if (panel.parentNode) panel.remove();
+    uiMode = 'fab';
+    showFab();
+    setFabActive(false);
+    if (panelAutoUpdateEnabled() && !window.__CRANK_PANEL_UPDATE_SCHEDULED__) {
+      schedulePanelAutoUpdate(COMPANION_HTTP);
+    } else if (panelAutoUpdateEnabled()) {
+      checkPanelUpdate(COMPANION_HTTP, { quiet: true });
+    }
+  }
+
   function setStatus(text) {
-    const el = panel.querySelector('#vc-status');
+    const el = panel && panel.querySelector('#vc-status');
     if (el) el.textContent = text;
+    if (selectHint && uiMode === 'selecting') {
+      selectHint.textContent = String(text || '');
+    }
   }
 
   function showToast(text, tone) {
@@ -603,7 +1130,7 @@
         copyTextToClipboard(AGENT_SHORT_PROMPT).then(function (ok) {
           showToast(
             ok
-              ? 'Copied — paste in your current Cursor chat'
+              ? 'Copied — ' + PASTE_IN_AGENT_CHAT
               : 'Copy failed — type: ' + AGENT_SHORT_PROMPT,
             ok ? 'ok' : 'error'
           );
@@ -752,7 +1279,9 @@
       copied = await copyTextToClipboard(AGENT_SHORT_PROMPT);
     }
     const msg =
-      'Queued — paste in your current Cursor chat (or ask: ' +
+      'Queued — ' +
+        PASTE_IN_AGENT_CHAT +
+        ' (or ask: ' +
       AGENT_SHORT_PROMPT +
       ')' +
       (copied ? ' · copied' : '');
@@ -1008,7 +1537,7 @@
 
     function walk(el) {
       if (!(el instanceof Element)) return;
-      if (panel.contains(el) || el.id === 'crank-highlight') return;
+      if (isCrankChrome(el)) return;
       if (isCopyUnitRoot(el)) {
         pushUnit(el);
         return; // do not split children into separate units
@@ -1142,19 +1671,36 @@
         });
         if (resp.ok && data && data.ok !== false) {
           setGleanEnabled(true);
+          hideCompanionOfflineUI();
           const wsOpen = socket && socket.readyState === 1;
-          setStatus(
-            wsOpen
-              ? 'Connected to companion'
-              : 'Companion ready — Ask Glean available (WS optional)'
-          );
+          const authed = !!getTeamToken();
+          if (uiMode === 'panel' && sessionId) {
+            setStatus('Selection ready — preview/edit or Ask Glean');
+          } else if (data.teamAuthRequired && !authed) {
+            setStatus('Companion online — enter team token to enable Ask Glean');
+          } else {
+            setStatus(
+              wsOpen
+                ? 'Connected to companion'
+                : 'Companion ready — select copy, then Ask Glean'
+            );
+          }
+          syncGleanButton();
+          if (panelAutoUpdateEnabled()) {
+            schedulePanelAutoUpdate(COMPANION_HTTP);
+          }
           return true;
         }
       } catch (_) {}
       setGleanEnabled(false);
+      showCompanionOfflineUI();
       setStatus(
-        'Companion offline — run: npx @ahmednawaz/crank start (Glean needs companion)'
+        'Companion offline — Retry below, run: ' +
+          companionStartCommand() +
+          ', or ask Cursor: ' +
+          COMPANION_AGENT_PHRASE
       );
+      syncGleanButton();
       return false;
     }
 
@@ -1181,14 +1727,17 @@
         } catch (_) {
           return;
         }
+        if (msg.type === 'SELECTION_ACK' && msg.session) {
+          applySessionFromServer(msg.session);
+          setStatus('Selection ready — preview/edit or Ask Glean');
+        }
         if (msg.type === 'VARIANTS_READY' && msg.session) {
           sessionId = msg.session.id;
           gleanActiveEpoch = 0;
           hideThinking();
           renderVariants(msg.session.variants || []);
           setStatus('Glean returned ' + (msg.session.variants || []).length + ' options');
-          const gleanBtn = panel.querySelector('#vc-glean');
-          if (gleanBtn) gleanBtn.disabled = !sessionId;
+          syncGleanButton();
         }
         if (msg.type === 'GLEAN_PROGRESS') {
           if (!gleanActiveEpoch) return;
@@ -1199,8 +1748,12 @@
           gleanActiveEpoch = 0;
           hideThinking();
           setStatus('Glean error: ' + (msg.error || 'unknown'));
-          const gleanBtn = panel.querySelector('#vc-glean');
-          if (gleanBtn) gleanBtn.disabled = !sessionId;
+          syncGleanButton();
+        }
+        if (msg.type === 'ERROR' && msg.code === 'TEAM_TOKEN_REQUIRED') {
+          setTeamToken('');
+          showTeamAuthUI(uiMode === 'panel' ? 'panel' : 'fab');
+          setStatus('Paste your team token to connect');
         }
         if (msg.type === 'APPLY_VARIANT' && selectedEl) {
           applyNodesToDom(selectedEl, msg.nodes || []);
@@ -1245,7 +1798,9 @@
             });
           } else {
             const wsMsg =
-              'Queued — paste in your current Cursor chat (or ask: ' +
+              'Queued — ' +
+        PASTE_IN_AGENT_CHAT +
+        ' (or ask: ' +
               AGENT_SHORT_PROMPT +
               ')';
             showToast(wsMsg, 'ok');
@@ -1332,12 +1887,17 @@
       data = {};
     }
     if (!res.ok) {
+      if (res.status === 502 || res.status === 503 || res.status === 504) {
+        throw new Error(
+          'Companion not reachable (' +
+            res.status +
+            ') — start it with: cd crank && npm run dev'
+        );
+      }
       if (res.status === 401 && (data.code === 'TEAM_TOKEN_REQUIRED' || data.code === 'TEAM_TOKEN_INVALID')) {
         setTeamToken('');
-        const ok = await ensureTeamToken();
-        if (ok) {
-          return postJson(path, body, options);
-        }
+        showTeamAuthUI(uiMode === 'panel' ? 'panel' : 'both');
+        setStatus('Paste your team token below, then click Save token');
       }
       const err = new Error(data.error || 'HTTP ' + res.status);
       err.status = res.status;
@@ -1399,6 +1959,9 @@
 
   function buildPanelShell() {
     const ui = UI();
+    const escape = ui.escapeHtml || function (v) {
+      return String(v == null ? '' : v);
+    };
     const btn = ui.vpButtonHtml || function (v, label, attrs) {
       return '<button type="button" id="' + (attrs && attrs.id || '') + '">' + label + '</button>';
     };
@@ -1409,11 +1972,46 @@
     panel.innerHTML =
       '<div class="vp-panel-block" style="padding:var(--vp-panel-padding, 1rem);">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">' +
+      '<div style="display:flex;align-items:center;gap:8px;">' +
       '<strong style="font-size:var(--vp-font-size-body,14px);font-weight:var(--vp-font-weight-title,600);">Crank</strong>' +
+      (getPanelChannel() === 'preview'
+        ? '<span class="vp-type-micro" style="padding:2px 8px;border-radius:999px;background:oklch(0.93 0.06 85);color:oklch(0.45 0.12 85);font-weight:620;">Preview</span>'
+        : '') +
+      '</div>' +
       btn('ghost', '×', { id: 'vc-close' }, { icon: true, size: 'compact' }) +
       '</div>' +
       '<p id="vc-status" class="vp-muted vp-type-support" style="margin:0 0 10px;">Loading UI…</p>' +
       '<div id="vc-toast" style="display:none;"></div>' +
+      '<div id="vc-companion-offline" style="display:none;margin:0 0 10px;padding:10px;border:1px solid oklch(0.55 0.14 25);border-radius:8px;background:oklch(0.97 0.02 25);">' +
+      '<div class="vp-type-label" style="font-weight:620;margin-bottom:6px;color:oklch(0.45 0.14 25);">Companion offline</div>' +
+      '<p class="vp-muted vp-type-micro" style="margin:0 0 8px;line-height:1.45;">Ask Glean, Copy, and Agent need the Crank companion (<code>' +
+      escape(String(COMPANION_HTTP).replace(/^https?:\/\//, '')) +
+      '</code>). The browser cannot start it — run in your project terminal, or paste the agent phrase in Cursor chat and let the agent run the command.</p>' +
+      '<div class="vp-type-micro" style="margin:0 0 6px;font-weight:600;">Terminal (project root)</div>' +
+      '<code id="vc-companion-cmd" style="display:block;margin:0 0 8px;padding:8px 10px;border-radius:6px;background:var(--background);border:1px solid var(--border);font:12px/1.4 ui-monospace,Menlo,monospace;word-break:break-all;">' +
+      escape(companionStartCommand()) +
+      '</code>' +
+      '<div class="vp-type-micro" style="margin:0 0 6px;font-weight:600;">First time in this repo</div>' +
+      '<code style="display:block;margin:0 0 8px;padding:8px 10px;border-radius:6px;background:var(--background);border:1px solid var(--border);font:12px/1.4 ui-monospace,Menlo,monospace;word-break:break-all;">' +
+      escape(companionFirstTimeCommand()) +
+      '</code>' +
+      '<div class="vp-type-micro" style="margin:0 0 6px;font-weight:600;">Cursor agent phrase</div>' +
+      '<code id="vc-companion-agent-phrase" style="display:block;margin:0 0 10px;padding:8px 10px;border-radius:6px;background:var(--background);border:1px solid var(--border);font:12px/1.4 ui-monospace,Menlo,monospace;">' +
+      escape(COMPANION_AGENT_PHRASE) +
+      '</code>' +
+      group(
+        btn('primary', 'Retry connection', { id: 'vc-companion-retry', type: 'button' }, { size: 'compact', flex: true }) +
+          btn('secondary', 'Copy command', { id: 'vc-companion-copy-cmd', type: 'button' }, { size: 'compact', flex: true }) +
+          btn('secondary', 'Copy agent phrase', { id: 'vc-companion-copy-agent', type: 'button' }, { size: 'compact', flex: true }),
+        { stretch: true }
+      ) +
+      '</div>' +
+      '<div id="vc-team-auth" style="display:none;margin:0 0 10px;padding:10px;border:1px solid var(--border);border-radius:8px;background:oklch(0.97 0.01 180);">' +
+      '<div class="vp-type-label" style="font-weight:620;margin-bottom:6px;">Team token required</div>' +
+      '<p class="vp-muted vp-type-micro" style="margin:0 0 8px;line-height:1.45;">Paste the same value as <code>CRANK_TEAM_TOKEN</code> in your project <code>.env</code>. It is saved in this browser only — not sent to chat.</p>' +
+      '<input type="password" id="vc-team-token" placeholder="Crank-…" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--background);color:var(--foreground);font:13px/1.4 ui-sans-serif,system-ui,sans-serif;margin-bottom:8px;" />' +
+      btn('primary', 'Save token', { id: 'vc-team-token-save' }, { size: 'compact', flex: true }) +
+      '</div>' +
       '<div id="vc-glean-options" style="margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
       '<label for="vc-option-count" class="vp-type-label" style="display:flex;align-items:center;gap:6px;cursor:help;" title="Number of new rewritten alternatives (original draft is not shown). Fewer may reduce wait slightly; most latency is still agent runtime (~1–2 min).">' +
       'New alternatives' +
@@ -1436,8 +2034,7 @@
       '</select>' +
       '</div>' +
       group(
-        btn('primary', 'Select', { id: 'vc-select' }, { size: 'compact', flex: true }) +
-          btn('secondary', 'Ask Glean', { id: 'vc-glean', disabled: true }, { size: 'compact', flex: true }),
+        btn('secondary', 'Ask Glean', { id: 'vc-glean', disabled: true }, { size: 'compact', flex: true }),
         { stretch: true }
       ) +
       '<div id="vc-edit" style="margin-top:12px;"></div>' +
@@ -1445,8 +2042,7 @@
       '<div id="vc-actions" style="margin-top:10px;">' +
       group(
         btn('secondary', 'Preview', { id: 'vc-preview', disabled: true }, { size: 'compact', flex: true }) +
-          btn('ghost', 'Discard', { id: 'vc-discard', disabled: true }, { size: 'compact', flex: true }) +
-          btn('primary', 'Save', { id: 'vc-save', disabled: true }, { size: 'compact', flex: true }),
+          btn('primary', 'Copy', { id: 'vc-copy-edits', disabled: true }, { size: 'compact', flex: true }),
         { stretch: true }
       ) +
       '</div>' +
@@ -1454,35 +2050,64 @@
       '<div id="vc-agent-handoff" style="display:none;margin:12px 0 0;padding:10px;border:1px solid var(--border);border-radius:8px;background:oklch(0.97 0.01 180);"></div>' +
       '</div>';
 
-    document.documentElement.appendChild(panel);
-    const optionCountSel = panel.querySelector('#vc-option-count');
-    if (optionCountSel) {
-      try {
-        const saved = localStorage.getItem(OPTION_COUNT_KEY);
-        if (saved && [2, 3, 4, 5, 6].indexOf(parseInt(saved, 10)) >= 0) {
-          optionCountSel.value = String(parseInt(saved, 10));
-        }
-      } catch (_) {}
-      optionCountSel.addEventListener('change', function () {
-        try {
-          localStorage.setItem(OPTION_COUNT_KEY, optionCountSel.value);
-        } catch (_) {}
+    panel.querySelector('#vc-close').addEventListener('click', closePanel);
+    const companionRetry = panel.querySelector('#vc-companion-retry');
+    const companionCopyCmd = panel.querySelector('#vc-companion-copy-cmd');
+    const companionCopyAgent = panel.querySelector('#vc-companion-copy-agent');
+    if (companionRetry) {
+      companionRetry.addEventListener('click', function () {
+        retryCompanionConnection();
       });
     }
-    panel.querySelector('#vc-close').addEventListener('click', teardown);
-    panel.querySelector('#vc-select').addEventListener('click', startSelect);
+    if (companionCopyCmd) {
+      companionCopyCmd.addEventListener('click', async function () {
+        const ok = await copyTextToClipboard(companionStartCommand());
+        showToast(
+          ok ? 'Copied terminal command' : 'Copy failed — select the command text',
+          ok ? 'ok' : 'error'
+        );
+      });
+    }
+    if (companionCopyAgent) {
+      companionCopyAgent.addEventListener('click', async function () {
+        const ok = await copyTextToClipboard(COMPANION_AGENT_PHRASE);
+        showToast(
+          ok ? 'Copied agent phrase — ' + PASTE_IN_AGENT_CHAT : 'Copy failed',
+          ok ? 'ok' : 'error'
+        );
+      });
+    }
+    const teamTokenInput = panel.querySelector('#vc-team-token');
+    const teamTokenSave = panel.querySelector('#vc-team-token-save');
+    if (teamTokenSave && teamTokenInput) {
+      teamTokenSave.addEventListener('click', function () {
+        saveTeamTokenFromInput(teamTokenInput);
+      });
+      teamTokenInput.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') saveTeamTokenFromInput(teamTokenInput);
+      });
+    }
     panel.querySelector('#vc-glean').addEventListener('click', requestGlean);
     panel.querySelector('#vc-preview').addEventListener('click', previewEdits);
-    panel.querySelector('#vc-discard').addEventListener('click', discardEdits);
-    panel.querySelector('#vc-save').addEventListener('click', saveEdits);
-    // Event delegation so Agent/Preview/Apply keep working after re-renders.
+    panel.querySelector('#vc-copy-edits').addEventListener('click', copyEditsPrompt);
+    const editBox = panel.querySelector('#vc-edit');
+    if (editBox && !editBox.__crankInputBound) {
+      editBox.__crankInputBound = true;
+      editBox.addEventListener('input', function () {
+        const anyEditable = selectedNodes.some(function (n) {
+          return n.editable;
+        });
+        setEditButtons(anyEditable);
+      });
+    }
+    // Event delegation so Agent/Preview/Copy keep working after re-renders.
     const variantsBox = panel.querySelector('#vc-variants');
     if (variantsBox && !variantsBox.__crankDelegated) {
       variantsBox.__crankDelegated = true;
       variantsBox.addEventListener('click', function (ev) {
         const target = ev.target && ev.target.closest
           ? ev.target.closest(
-              '[data-variant-agent],[data-variant-preview],[data-variant-apply]'
+              '[data-variant-agent],[data-variant-preview],[data-variant-copy]'
             )
           : null;
         if (!target || !variantsBox.contains(target)) return;
@@ -1498,10 +2123,24 @@
           applyVariant(previewId, { syncEditors: false, persist: false });
           return;
         }
-        const applyId = target.getAttribute('data-variant-apply');
-        if (applyId) {
-          applyVariant(applyId, { syncEditors: true, persist: true });
+        const copyId = target.getAttribute('data-variant-copy');
+        if (copyId) {
+          copyVariantPrompt(copyId);
         }
+      });
+    }
+    const optionCountSel = panel.querySelector('#vc-option-count');
+    if (optionCountSel) {
+      try {
+        const saved = localStorage.getItem(OPTION_COUNT_KEY);
+        if (saved && [2, 3, 4, 5, 6].indexOf(parseInt(saved, 10)) >= 0) {
+          optionCountSel.value = String(parseInt(saved, 10));
+        }
+      } catch (_) {}
+      optionCountSel.addEventListener('change', function () {
+        try {
+          localStorage.setItem(OPTION_COUNT_KEY, optionCountSel.value);
+        } catch (_) {}
       });
     }
   }
@@ -1602,19 +2241,31 @@
     setEditButtons(anyEditable);
   }
 
-  function setEditButtons(enabled) {
-    ['vc-preview', 'vc-discard', 'vc-save', 'vc-glean'].forEach(function (id) {
-      const el = panel.querySelector('#' + id);
-      if (el) el.disabled = !enabled && id !== 'vc-glean' ? true : !sessionId && id === 'vc-glean' ? true : !enabled && id !== 'vc-glean';
+  function hasEditDeltas() {
+    const nodes = readEditedNodes();
+    return nodes.some(function (n) {
+      if (!n.editable) return false;
+      const snap = originalSnapshot.find(function (o) {
+        return o.path === n.path;
+      });
+      const oldText =
+        snap && snap.text != null
+          ? snap.text
+          : n.originalText != null
+            ? n.originalText
+            : n.text;
+      return String(n.text) !== String(oldText);
     });
-    const glean = panel.querySelector('#vc-glean');
-    if (glean) glean.disabled = !sessionId;
+  }
+
+  function setEditButtons(enabled) {
+    syncGleanButton();
     const preview = panel.querySelector('#vc-preview');
-    const discard = panel.querySelector('#vc-discard');
-    const save = panel.querySelector('#vc-save');
+    const copyEdits = panel.querySelector('#vc-copy-edits');
     if (preview) preview.disabled = !enabled;
-    if (discard) discard.disabled = !enabled;
-    if (save) save.disabled = !enabled;
+    if (copyEdits) {
+      copyEdits.disabled = !enabled || !sessionId || !hasEditDeltas();
+    }
   }
 
   function readEditedNodes() {
@@ -1639,14 +2290,66 @@
     setStatus('DOM preview applied (not saved to source yet)');
   }
 
-  function discardEdits() {
-    restoreOriginal();
-    selectedNodes = originalSnapshot.map(function (n) {
-      return Object.assign({}, n);
-    });
-    renderNodes();
-    sendWs({ type: 'DISCARD_TEXT_PREVIEW', sessionId: sessionId });
-    setStatus('Discarded — restored original DOM text');
+  async function copyEditsPrompt() {
+    if (!sessionId) {
+      const msg = 'Select a region first';
+      showToast(msg, 'error');
+      setStatus(msg);
+      return;
+    }
+    const nodes = readEditedNodes();
+    if (!hasEditDeltas()) {
+      const msg = 'Edit copy in the fields above, then Copy';
+      showToast(msg, 'error');
+      setStatus(msg);
+      return;
+    }
+    showToast('Building copy prompt…', 'info');
+    setStatus('Building copy prompt…');
+    try {
+      const data = await postJson(
+        '/api/copy-prompt',
+        {
+          sessionId: sessionId,
+          nodes: nodes,
+          label: 'Manual edits'
+        },
+        { timeoutMs: 15000 }
+      );
+      if (!data.ok || !data.prompt) {
+        throw new Error(
+          (data && data.error) || 'Companion returned no copy prompt'
+        );
+      }
+      const copied = await copyTextToClipboard(data.prompt);
+      const count =
+        typeof data.changeCount === 'number'
+          ? data.changeCount
+          : Array.isArray(data.changes)
+            ? data.changes.length
+            : 0;
+      const msg = copied
+        ? 'Copied agent prompt (' +
+          count +
+          ' change' +
+          (count === 1 ? '' : 's') +
+          ') — ' +
+          PASTE_IN_AGENT_CHAT
+        : 'Copy prompt ready but clipboard failed — check browser permissions';
+      showToast(msg, copied ? 'ok' : 'error');
+      setStatus(msg);
+    } catch (err) {
+      const raw = err && err.message ? String(err.message) : 'unknown';
+      const down =
+        /Companion not running|Failed to fetch|NetworkError|Load failed/i.test(
+          raw
+        );
+      const msg = down
+        ? 'Companion not running — start with npx crank / open :3344'
+        : 'Copy failed: ' + raw;
+      showToast(msg, 'error');
+      setStatus(msg);
+    }
   }
 
   function pathHintsFromLocation() {
@@ -1665,47 +2368,6 @@
     return hints;
   }
 
-  async function saveEdits() {
-    const nodes = readEditedNodes();
-    previewEdits();
-    setStatus('Saving editable strings to source…');
-    const selector = selectedEl ? cssPath(selectedEl) : '';
-    let saved = 0;
-    let failed = 0;
-    for (const node of nodes) {
-      if (!node.editable) continue;
-      if (String(node.text) === String(node.previousText || originalSnapshot.find(function (o) { return o.path === node.path; })?.text)) {
-        continue;
-      }
-      const oldValue =
-        (originalSnapshot.find(function (o) {
-          return o.path === node.path;
-        }) || {}).text || node.previousText || node.originalText;
-      const payload = {
-        selectorText: node.selector || selector,
-        value: node.text,
-        oldValue: oldValue,
-        sourceUrl: String(document.baseURI || location.href),
-        origin: String(location.origin || ''),
-        pageUrl: String(location.href || ''),
-        pathHints: pathHintsFromLocation()
-      };
-      const sent = sendWs({ type: 'SAVE_TEXT_CHANGE', payload: payload });
-      if (!sent) {
-        const data = await postJson('/api/save-text', payload);
-        if (data.ok || data.success) saved += 1;
-        else failed += 1;
-      } else {
-        saved += 1;
-      }
-    }
-    setStatus(
-      failed
-        ? 'Save finished with errors (see status / companion logs)'
-        : 'Save dispatched for ' + saved + ' string(s)'
-    );
-  }
-
   function variantFieldRows(variant) {
     const fields = variant && variant.fields ? variant.fields : null;
     const rows = [];
@@ -1717,7 +2379,8 @@
       (fields.heading ||
         fields.body ||
         fields.cta ||
-        (Array.isArray(fields.bodies) && fields.bodies.length))
+        (Array.isArray(fields.bodies) && fields.bodies.length) ||
+        (Array.isArray(fields.copies) && fields.copies.length))
     ) {
       if (fields.heading) {
         rows.push({ label: sessionLabels[0] || 'Heading', text: fields.heading });
@@ -1735,6 +2398,16 @@
         rows.push({
           label: sessionLabels[rows.length] || 'Body',
           text: fields.body
+        });
+      }
+      if (Array.isArray(fields.copies) && fields.copies.length) {
+        fields.copies.forEach(function (t, i) {
+          if (String(t || '').trim()) {
+            rows.push({
+              label: sessionLabels[rows.length] || 'Copy ' + (i + 1),
+              text: t
+            });
+          }
         });
       }
       if (fields.cta) {
@@ -1848,6 +2521,14 @@
         '</div>';
     }
 
+    if (variant.scores) {
+      bodyHtml +=
+        '<div class="vp-muted vp-type-micro" style="margin-top:8px;padding:8px;border-radius:8px;background:oklch(0.97 0.01 180);line-height:1.45;">' +
+        '<span style="font-weight:600;">Agent notes:</span> ' +
+        escape(String(variant.scores)) +
+        '</div>';
+    }
+
     const recommended = !!variant.recommended;
     return (
       '<article class="vp-panel-block vc-variant-card' +
@@ -1872,8 +2553,8 @@
         ) +
           btn(
             'primary',
-            'Apply',
-            { 'data-variant-apply': variant.id, type: 'button' },
+            'Copy',
+            { 'data-variant-copy': variant.id, type: 'button' },
             { size: 'compact', flex: true }
           ) +
           btn(
@@ -1970,6 +2651,68 @@
           ? 'Expected companion at ' + COMPANION_HTTP
           : 'Is the companion running at ' + COMPANION_HTTP + '?'
       );
+      showToast(msg, 'error');
+      setStatus(msg);
+    }
+  }
+
+  async function copyVariantPrompt(variantId) {
+    if (!sessionId) {
+      const msg = 'Select a region and Ask Glean before using Copy';
+      showToast(msg, 'error');
+      setStatus(msg);
+      return;
+    }
+    if (!variantId) {
+      const msg = 'Copy: missing variant id';
+      showToast(msg, 'error');
+      setStatus(msg);
+      return;
+    }
+    activeVariantId = variantId;
+    markActiveVariantCard(variantId);
+    showToast('Building copy prompt…', 'info');
+    setStatus('Building copy prompt…');
+    try {
+      const data = await postJson(
+        '/api/copy-prompt',
+        {
+          sessionId: sessionId,
+          variantId: variantId
+        },
+        { timeoutMs: 15000 }
+      );
+      if (!data.ok || !data.prompt) {
+        throw new Error(
+          (data && data.error) || 'Companion returned no copy prompt'
+        );
+      }
+      const copied = await copyTextToClipboard(data.prompt);
+      const count =
+        typeof data.changeCount === 'number'
+          ? data.changeCount
+          : Array.isArray(data.changes)
+            ? data.changes.length
+            : 0;
+      const msg = copied
+        ? 'Copied agent prompt (' +
+          count +
+          ' change' +
+          (count === 1 ? '' : 's') +
+          ') — ' +
+          PASTE_IN_AGENT_CHAT
+        : 'Copy prompt ready but clipboard failed — check browser permissions';
+      showToast(msg, copied ? 'ok' : 'error');
+      setStatus(msg);
+    } catch (err) {
+      const raw = err && err.message ? String(err.message) : 'unknown';
+      const down =
+        /Companion not running|Failed to fetch|NetworkError|Load failed/i.test(
+          raw
+        );
+      const msg = down
+        ? 'Companion not running — start with npx crank / open :3344'
+        : 'Copy failed: ' + raw;
       showToast(msg, 'error');
       setStatus(msg);
     }
@@ -2239,7 +2982,25 @@
   }
 
   async function requestGlean() {
-    if (!sessionId) return;
+    if (!sessionId) {
+      const authed = await ensureTeamToken();
+      if (!authed) {
+        showTeamAuthUI('panel');
+        setStatus('Paste your team token below, then click Save token');
+        return;
+      }
+      await retryPendingSelection();
+      if (!sessionId) return;
+    }
+    const companionOk =
+      typeof window.__crankProbeCompanion === 'function'
+        ? await window.__crankProbeCompanion()
+        : window.__CRANK_COMPANION_ONLINE__ !== false;
+    if (!companionOk) {
+      showCompanionOfflineUI();
+      showToast('Companion offline — start it, then click Retry', 'error');
+      return;
+    }
     if (gleanActiveEpoch) {
       setStatus('Glean request already in progress…');
       return;
@@ -2305,7 +3066,7 @@
   function onMove(ev) {
     if (!selecting) return;
     const el = document.elementFromPoint(ev.clientX, ev.clientY);
-    if (!el || panel.contains(el) || el === highlight) return;
+    if (!el || isCrankChrome(el)) return;
     const target = el.closest('div') || el;
     const r = target.getBoundingClientRect();
     highlight.style.left = r.left + 'px';
@@ -2319,7 +3080,7 @@
     ev.preventDefault();
     ev.stopPropagation();
     const el = document.elementFromPoint(ev.clientX, ev.clientY);
-    if (!el || panel.contains(el)) return;
+    if (!el || isCrankChrome(el)) return;
     const target = el.closest('div') || el;
     stopSelect();
     selectedEl = target;
@@ -2336,8 +3097,8 @@
         originalText: n.originalText != null ? n.originalText : n.text
       });
     });
+    openPanelAfterSelection();
     renderNodes();
-    setStatus('Selected ' + selectedNodes.length + ' copy field(s)');
     const payload = {
       origin: location.origin,
       pageUrl: location.href,
@@ -2351,23 +3112,27 @@
         pathHints: pathHintsFromLocation()
       }
     };
+    pendingSelectionPayload = payload;
     try {
-      if (sendWs({ type: 'SET_SELECTION', payload: payload })) {
-        /* ack sets session via SELECTION — also POST for reliability */
+      const authed = await ensureTeamToken();
+      if (!authed) {
+        showTeamAuthUI('panel');
+        setStatus('Paste your team token below, then click Save token');
+        syncGleanButton();
+        return;
       }
-      const data = await postJson('/api/selection', payload);
-      if (data.ok) {
-        sessionId = data.session.id;
-        panel.querySelector('#vc-glean').disabled = false;
-        setStatus('Selection ready — preview/edit or Ask Glean');
-      }
+      pendingSelectionPayload = null;
+      await registerSelection(payload);
     } catch (err) {
-      setStatus('Selection error: ' + err.message);
+      const msg = err && err.message ? String(err.message) : 'Selection failed';
+      showToast(msg, 'error');
+      setStatus('Selection error: ' + msg);
+      syncGleanButton();
     }
   }
 
   function onKey(ev) {
-    if (ev.key === 'Escape' && selecting) stopSelect();
+    if (ev.key === 'Escape' && selecting) cancelSelectionMode();
   }
 
   function startSelect() {
@@ -2376,7 +3141,7 @@
     document.addEventListener('mousemove', onMove, true);
     document.addEventListener('click', onClick, true);
     document.addEventListener('keydown', onKey, true);
-    setStatus('Hover a div, click to select. Esc cancels.');
+    setStatus('Hover a layout, click to select · Esc cancels');
   }
 
   function stopSelect() {
@@ -2388,49 +3153,39 @@
   }
 
   function showReopenChip() {
-    if (document.getElementById('vp-crank-reopen')) {
-      return;
-    }
-    const chip = document.createElement('button');
-    chip.id = 'vp-crank-reopen';
-    chip.type = 'button';
-    chip.textContent = 'Crank';
-    chip.setAttribute('aria-label', 'Reopen Crank panel');
-    chip.style.cssText =
-      'position:fixed;bottom:16px;right:16px;z-index:2147483646;padding:8px 12px;' +
-      'border-radius:999px;border:1px solid rgba(0,0,0,.12);background:#0f766e;color:#fff;' +
-      'font:600 12px/1.2 system-ui,sans-serif;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.18);';
-    chip.addEventListener('click', function () {
-      chip.remove();
-      window.__CRANK_LOADER__ = false;
-      window.__crankActive = false;
-      if (typeof window.__crankBootEmbedded === 'function') {
-        try {
-          window.__crankBootEmbedded();
-          return;
-        } catch (_) {}
-      }
-      const s = document.createElement('script');
-      if (window.__CRANK_ASSET_MAP__ && window.__CRANK_ASSET_MAP__['crank-bookmarklet.js']) {
-        s.src = window.__CRANK_ASSET_MAP__['crank-bookmarklet.js'];
-      } else if (ASSET_BASE && ASSET_BASE.indexOf('blob:crank/') !== 0) {
-        s.src = ASSET_BASE + 'crank-bookmarklet.js?t=' + Date.now();
-      } else {
-        s.src = COMPANION_HTTP + '/bookmarklet.js?t=' + Date.now();
-      }
-      s.async = true;
-      s.dataset.crankLoader = '1';
-      document.documentElement.appendChild(s);
-    });
-    document.documentElement.appendChild(chip);
+    showFab();
   }
 
+  async function reopenPanel() {
+    const chip = document.getElementById('vp-crank-reopen');
+    if (chip) chip.remove();
+    window.__crankActive = true;
+    window.__CRANK_LOADER__ = true;
+    try {
+      await boot();
+    } catch (err) {
+      console.error('[Crank] reopen failed', err);
+      showFab();
+    }
+  }
+
+  window.__crankReopenPanel = reopenPanel;
+
   function teardown() {
-    stopSelect();
-    restoreOriginal();
-    if (socket) socket.close();
-    if (panel && panel.parentNode) panel.remove();
+    closePanel();
+    if (socket) {
+      try {
+        socket.close();
+      } catch (_) {}
+      socket = null;
+    }
     if (highlight && highlight.parentNode) highlight.remove();
+    if (fab && fab.parentNode) fab.remove();
+    fab = null;
+    if (teamAuthFab && teamAuthFab.parentNode) teamAuthFab.remove();
+    teamAuthFab = null;
+    if (selectHint && selectHint.parentNode) selectHint.remove();
+    selectHint = null;
     window.__crankActive = false;
     window.__crankTeardown = null;
     window.__CRANK_LOADER__ = false;
@@ -2439,17 +3194,19 @@
         el.remove();
       });
     } catch (_) {}
-    showReopenChip();
   }
 
   window.__crankTeardown = teardown;
 
   async function boot() {
     await loadPanelAssets();
-    buildPanelShell();
+    ensureFab();
+    if (!panel.querySelector('#vc-glean')) {
+      buildPanelShell();
+    }
     const authed = await ensureTeamToken();
     if (!authed) {
-      setStatus('Crank team token required — reload after you have it');
+      showTeamAuthUI('fab');
       try {
         connectWs();
       } catch (_) {}
@@ -2458,35 +3215,23 @@
       }
       return;
     }
-    // Companion WebSocket is optional — Ask Glean uses HTTP /api/variants.
-    setStatus('Panel ready — connecting to companion…');
     try {
       connectWs();
     } catch (_) {}
     if (typeof window.__crankProbeCompanion === 'function') {
       await window.__crankProbeCompanion();
     }
+    if (panelAutoUpdateEnabled()) {
+      schedulePanelAutoUpdate(COMPANION_HTTP);
+    }
   }
 
   boot().catch(function (err) {
     console.error('[Crank] boot failed', err);
-    // Only wipe UI for hard asset/shell failures — never for companion/WS issues.
-    const shellReady = panel && panel.parentNode && panel.querySelector('#vc-select');
-    if (shellReady) {
-      try {
-        setStatus(
-          'UI loaded; companion optional — ' +
-            String(err && err.message ? err.message : err)
-        );
-      } catch (_) {}
+    const shellReady = panel && panel.querySelector('#vc-glean');
+    if (shellReady || (fab && fab.parentNode)) {
       return;
     }
-    if (panel && panel.parentNode) {
-      panel.innerHTML =
-        '<div class="vp-panel-block" style="padding:var(--vp-panel-padding, 1rem);">' +
-        '<div class="vp-banner vp-banner--error vp-type-support">Crank failed to load UI: ' +
-        String(err && err.message ? err.message : err) +
-        '</div></div>';
-    }
+    ensureFab();
   });
 })();

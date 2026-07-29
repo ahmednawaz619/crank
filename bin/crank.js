@@ -32,9 +32,10 @@ const {
 } = require('../lib/urls');
 const { resolveProjectRoot, describeEnvironment } = require('../lib/resolve-project');
 const { injectCrank } = require('../lib/wire-react');
+const { applyChannelEnv, normalizeChannel } = require('../lib/panel-channel');
 
-const LOG_FILE = env('LOG', '/tmp/crank-companion.log');
-const PID_FILE = env('PID_FILE', '/tmp/crank-companion.pid');
+let LOG_FILE = env('LOG', '/tmp/crank-companion.log');
+let PID_FILE = env('PID_FILE', '/tmp/crank-companion.pid');
 
 function printHelp() {
   process.stdout.write(`Usage: crank [command] [project-root]
@@ -60,7 +61,13 @@ Flags:
   --dev         Force npm run dev even if not auto-detected
   --no-claude   Skip Claude Desktop MCP merge
   --http-mcp    Force HTTP MCP (Replit auto-enables this)
+  --preview     Preview channel (port 3346, npm @preview, internal testing)
+  --production  Production channel (default, port 3344, npm @latest)
   -h, --help    Show help
+
+Channels:
+  Production (default): npx @ahmednawaz/crank@latest  — all users auto-update on publish
+  Preview (internal):   npx @ahmednawaz/crank@preview --preview  — test before release
 
 First run (one shot — any project):
   npx @ahmednawaz/crank@latest
@@ -74,6 +81,9 @@ Examples:
   npx @ahmednawaz/crank start
   npx @ahmednawaz/crank mcp
   npx @ahmednawaz/crank stop
+  npx @ahmednawaz/crank --preview
+  npx @ahmednawaz/crank stop --preview
+  npx @ahmednawaz/crank stop --all
 `);
 }
 
@@ -87,12 +97,23 @@ function parseArgs(argv) {
     claude: true,
     help: false,
     daemon: null,
+    preview: false,
+    production: false,
+    stopAll: false,
     explicit: {}
   };
   const positional = [];
   for (const arg of argv) {
     if (arg === '-h' || arg === '--help') {
       flags.help = true;
+    } else if (arg === '--preview') {
+      flags.preview = true;
+      flags.explicit.channel = true;
+    } else if (arg === '--production') {
+      flags.production = true;
+      flags.explicit.channel = true;
+    } else if (arg === '--all') {
+      flags.stopAll = true;
     } else if (arg === '--no-mcp') {
       flags.mcp = false;
     } else if (arg === '--no-vite') {
@@ -295,6 +316,10 @@ function printBanner(projectRoot, detectEnv, initResult, runtime, modeLabel, res
   } else {
     console.log('  Team lock: OFF — set CRANK_TEAM_TOKEN in .env to require a passphrase');
   }
+  const channel = normalizeChannel(process.env.CRANK_CHANNEL);
+  console.log(
+    `  Channel:    ${channel}${channel === 'preview' ? ' (internal — not auto-updated to production)' : ''}`
+  );
   if (modeLabel) {
     console.log(`  Mode:       ${modeLabel}`);
   }
@@ -541,7 +566,23 @@ function launchDetachedDaemon(projectRoot, argvFlags) {
   }
 }
 
-async function stopDaemon() {
+async function stopDaemon(flags = {}) {
+  if (flags.stopAll) {
+    for (const ch of ['production', 'preview']) {
+      const meta = applyChannelEnv({ preview: ch === 'preview', production: ch === 'production' });
+      LOG_FILE = meta.logFile;
+      PID_FILE = meta.pidFile;
+      await stopDaemonOnce(meta);
+    }
+    return;
+  }
+  const meta = applyChannelEnv(flags);
+  LOG_FILE = meta.logFile;
+  PID_FILE = meta.pidFile;
+  await stopDaemonOnce(meta);
+}
+
+async function stopDaemonOnce(meta) {
   const pid = readPid();
   if (pid && isPidAlive(pid)) {
     try {
@@ -560,15 +601,15 @@ async function stopDaemon() {
     console.log('[Crank] No PID file; stopping listeners on companion/MCP ports if any');
   }
   await new Promise((r) => setTimeout(r, 500));
-  killPortListeners(process.env.CRANK_PORT || '3344');
-  killPortListeners(process.env.CRANK_MCP_HTTP_PORT || '3345');
+  killPortListeners(String(meta.companionPort));
+  killPortListeners(String(meta.mcpHttpPort));
   clearPid();
   await new Promise((r) => setTimeout(r, 400));
   const health = await checkHealth(800);
   console.log(
     health.ok
-      ? '[Crank] Warning: /health still responds — another process may own the port'
-      : '[Crank] Companion stopped'
+      ? `[Crank] Warning (${meta.channel}): /health still responds — another process may own the port`
+      : `[Crank] Companion stopped (${meta.channel})`
   );
 }
 
@@ -592,6 +633,10 @@ async function main() {
 
   loadAllEnv(projectRoot);
   process.env.CRANK_PROJECT_ROOT = path.resolve(projectRoot);
+
+  const channelMeta = applyChannelEnv(flags);
+  LOG_FILE = channelMeta.logFile;
+  PID_FILE = channelMeta.pidFile;
 
   if (command === 'mcp') {
     syncCrankSkill(projectRoot);
@@ -627,7 +672,7 @@ async function main() {
   }
 
   if (command === 'stop') {
-    await stopDaemon();
+    await stopDaemon(flags);
     return;
   }
 

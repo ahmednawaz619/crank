@@ -14,16 +14,6 @@ let pending = null;
 /** @type {Array<{ sinceId: string|null, resolve: Function, timer: NodeJS.Timeout }>} */
 const watchers = [];
 
-function roleLabel(role, node, index, nodes) {
-  if (node && node.label) return node.label;
-  if (node && nodes) return unitDisplayLabel(node, index, nodes);
-  const r = String(role || 'text').toLowerCase();
-  if (r === 'heading') return 'Heading';
-  if (r === 'action' || r === 'button') return 'CTA';
-  if (r === 'label') return 'Label';
-  return 'Copy';
-}
-
 function findSessionNode(sessionNodes, vn) {
   if (!vn) return null;
   if (vn.id) {
@@ -45,31 +35,25 @@ function findSessionNode(sessionNodes, vn) {
   return null;
 }
 
+function roleLabel(role, node, index, nodes) {
+  if (node && node.label) return node.label;
+  if (node && nodes) return unitDisplayLabel(node, index, nodes);
+  const r = String(role || 'text').toLowerCase();
+  if (r === 'heading') return 'Heading';
+  if (r === 'action' || r === 'button') return 'CTA';
+  if (r === 'label') return 'Label';
+  return 'Copy';
+}
+
 /**
- * Build an executable prompt the Cursor agent can follow to update source.
- * Always lists per-string old→new pairs (one row per copy unit).
+ * Old→new copy units for a variant vs session selection.
  * @param {{ session: object, variant: object }} opts
  */
-function buildAgentPrompt({ session, variant }) {
-  const lines = [
-    'Apply this Crank copy change to the product source files.',
-    '',
-    'Context:',
-    `- Page: ${session?.pageUrl || '(unknown)'}`,
-    `- Selection selector: ${session?.selector || '(unknown)'}`,
-    `- Variant: ${variant?.label || variant?.id || '(unnamed)'}`,
-    '',
-    'Update each string below independently (old → new). Do not reuse one New value for every field.',
-    'Prefer hardcoded JSX/HTML string literals; do not invent i18n keys. Skip dynamic/bound/API-driven values.',
-    '',
-    'Per-string mapping:'
-  ];
-
+function collectCopyChanges({ session, variant }) {
   const changes = [];
   const sessionNodes = Array.isArray(session?.nodes) ? session.nodes : [];
   const variantNodes = Array.isArray(variant?.nodes) ? variant.nodes : [];
 
-  // Primary: node-aligned mapping (id/path) — never collapse to a single blob.
   if (variantNodes.length) {
     for (let vi = 0; vi < variantNodes.length; vi++) {
       const vn = variantNodes[vi];
@@ -97,61 +81,165 @@ function buildAgentPrompt({ session, variant }) {
         newText: String(newText)
       });
     }
-  } else {
-    // Fallback: fields object with exclusive role/positional assignment
-    const fields = variant?.fields || {};
-    const bodies = Array.isArray(fields.bodies)
-      ? fields.bodies
-      : fields.body
-        ? [fields.body]
-        : [];
-    const slots = [
-      { role: 'heading', value: fields.heading },
-      ...bodies.map((value) => ({ role: 'text', value })),
-      { role: 'action', value: fields.cta }
-    ].filter((s) => s.value != null && s.value !== '');
+    return changes;
+  }
 
-    const used = new Set();
-    for (const slot of slots) {
-      let match = sessionNodes.find(
+  const fields = variant?.fields || {};
+  const bodies = Array.isArray(fields.bodies)
+    ? fields.bodies
+    : fields.body
+      ? [fields.body]
+      : [];
+  const copies = Array.isArray(fields.copies) ? fields.copies : [];
+  const slots = [
+    { role: 'heading', value: fields.heading },
+    ...bodies.map((value) => ({ role: 'text', value })),
+    ...copies.map((value) => ({ role: 'text', value })),
+    { role: 'action', value: fields.cta }
+  ].filter((s) => s.value != null && String(s.value).trim() !== '');
+
+  const used = new Set();
+  for (const slot of slots) {
+    let match = sessionNodes.find(
+      (n, i) =>
+        !used.has(i) && String(n.role || '').toLowerCase() === slot.role
+    );
+    if (!match && slot.role === 'action') {
+      match = sessionNodes.find(
         (n, i) =>
           !used.has(i) &&
-          String(n.role || '').toLowerCase() === slot.role
+          String(n.role || '').toLowerCase() === 'button'
       );
-      if (!match && slot.role === 'action') {
-        match = sessionNodes.find(
-          (n, i) =>
-            !used.has(i) &&
-            String(n.role || '').toLowerCase() === 'button'
-        );
-      }
-      if (!match) {
-        const idx = sessionNodes.findIndex((_, i) => !used.has(i));
-        match = idx >= 0 ? sessionNodes[idx] : null;
-        if (idx >= 0) used.add(idx);
-      } else {
-        used.add(sessionNodes.indexOf(match));
-      }
-      if (!match) continue;
-      const oldText =
-        match.originalText ?? match.previousText ?? match.text ?? '';
-      changes.push({
-        id: match.id || `copy-${match.path}`,
-        role: match.role || slot.role,
-        label: roleLabel(
-          match.role || slot.role,
-          match,
-          sessionNodes.indexOf(match),
-          sessionNodes
-        ),
-        selector: match.selector || session?.selector || '',
-        path: match.path,
-        editable: match.editable !== false,
-        oldText: String(oldText),
-        newText: String(slot.value)
-      });
+    }
+    if (!match) {
+      const idx = sessionNodes.findIndex((_, i) => !used.has(i));
+      match = idx >= 0 ? sessionNodes[idx] : null;
+      if (idx >= 0) used.add(idx);
+    } else {
+      used.add(sessionNodes.indexOf(match));
+    }
+    if (!match) continue;
+    const oldText =
+      match.originalText ?? match.previousText ?? match.text ?? '';
+    if (String(oldText) === String(slot.value)) continue;
+    changes.push({
+      id: match.id || `copy-${match.path}`,
+      role: match.role || slot.role,
+      label: roleLabel(
+        match.role || slot.role,
+        match,
+        sessionNodes.indexOf(match),
+        sessionNodes
+      ),
+      selector: match.selector || session?.selector || '',
+      path: match.path,
+      editable: match.editable !== false,
+      oldText: String(oldText),
+      newText: String(slot.value)
+    });
+  }
+  return changes;
+}
+
+/**
+ * Old→new copy units from panel textarea edits vs session originals.
+ * @param {{ session: object, nodes: object[] }} opts
+ */
+function collectCopyChangesFromEdits({ session, nodes }) {
+  const changes = [];
+  const sessionNodes = Array.isArray(session?.nodes) ? session.nodes : [];
+  const edits = Array.isArray(nodes) ? nodes : [];
+
+  for (let i = 0; i < edits.length; i++) {
+    const en = edits[i];
+    if (en && en.editable === false) continue;
+    const sn = findSessionNode(sessionNodes, en) || sessionNodes[i];
+    const oldText =
+      sn?.originalText ?? sn?.previousText ?? sn?.text ?? en?.originalText ?? '';
+    const newText = en?.text != null ? en.text : '';
+    if (String(oldText) === String(newText)) continue;
+    const snIndex = sn
+      ? sessionNodes.findIndex((n) => n && String(n.path) === String(sn.path))
+      : i;
+    changes.push({
+      id: en?.id || sn?.id || `copy-${en?.path ?? i}`,
+      role: en?.role || sn?.role || 'text',
+      label: roleLabel(
+        en?.role || sn?.role,
+        sn || en,
+        snIndex >= 0 ? snIndex : i,
+        sessionNodes
+      ),
+      selector: en?.selector || sn?.selector || session?.selector || '',
+      path: en?.path != null ? en.path : sn?.path,
+      editable: en?.editable !== false && sn?.editable !== false,
+      oldText: String(oldText),
+      newText: String(newText)
+    });
+  }
+  return changes;
+}
+
+/**
+ * Token-efficient prompt for paste-into-agent Copy action.
+ * @param {{ session: object, variant?: object, nodes?: object[], label?: string }} opts
+ */
+function buildCompactCopyPrompt({ session, variant, nodes, label }) {
+  const changes =
+    Array.isArray(nodes) && nodes.length
+      ? collectCopyChangesFromEdits({ session, nodes })
+      : collectCopyChanges({ session, variant });
+  const lines = [
+    'Update UI copy in source files.',
+    'Search the repo for each Old string and update every occurrence across the product (not only this page).',
+    '',
+    `Page: ${session?.pageUrl || '(unknown)'}`,
+    `Block: ${session?.selector || '(unknown)'}`
+  ];
+  const optionLabel =
+    label ||
+    (variant && (variant.label || variant.id)) ||
+    (Array.isArray(nodes) && nodes.length ? 'Manual edits' : '');
+  if (optionLabel) {
+    lines.push(`Option: ${optionLabel}`);
+  }
+  lines.push('', 'Changes:');
+  if (!changes.length) {
+    lines.push('(no text deltas — inspect variant vs selection)');
+  } else {
+    for (const c of changes) {
+      lines.push(
+        `${c.label}: ${JSON.stringify(c.oldText)} → ${JSON.stringify(c.newText)}`
+      );
     }
   }
+  lines.push(
+    '',
+    'Rules: 1:1 mapping; JSX/HTML/TSX string literals; skip dynamic/i18n/bound values; confirm files changed.'
+  );
+  return { prompt: lines.join('\n'), changes };
+}
+
+/**
+ * Build an executable prompt the Cursor agent can follow to update source.
+ * @param {{ session: object, variant: object }} opts
+ */
+function buildAgentPrompt({ session, variant }) {
+  const changes = collectCopyChanges({ session, variant });
+  const lines = [
+    'Apply this Crank copy change to the product source files.',
+    '',
+    'Context:',
+    `- Page: ${session?.pageUrl || '(unknown)'}`,
+    `- Selection selector: ${session?.selector || '(unknown)'}`,
+    `- Variant: ${variant?.label || variant?.id || '(unnamed)'}`,
+    '',
+    'Update each string below independently (old → new). Do not reuse one New value for every field.',
+    'Search the repo for each Old string and update every occurrence across the product.',
+    'Prefer hardcoded JSX/HTML string literals; do not invent i18n keys. Skip dynamic/bound/API-driven values.',
+    '',
+    'Per-string mapping:'
+  ];
 
   if (!changes.length) {
     lines.push('(No text deltas found — inspect the variant nodes and selection.)');
@@ -179,10 +267,11 @@ function buildAgentPrompt({ session, variant }) {
   lines.push('Instructions:');
   lines.push('1. Locate the source file(s) containing each Old string (HTML/JSX/TSX).');
   lines.push('2. Replace each Old with its matching New only — keep mappings 1:1.');
-  lines.push('3. If a string is i18n/dynamic/bound, say so and do not invent translations.');
-  lines.push('4. After edits, briefly confirm which files changed.');
+  lines.push('3. Update duplicate Old strings elsewhere in the product when the same copy appears.');
+  lines.push('4. If a string is i18n/dynamic/bound, say so and do not invent translations.');
+  lines.push('5. After edits, briefly confirm which files changed.');
   lines.push(
-    '5. Prefer MCP tools when available: crank_get_formatted_changes / get_pending_agent_prompt, then apply_copy_variant (persist) or edit source, then crank_clear_changes / ack_pending_agent_prompt.'
+    '6. Prefer MCP tools when available: crank_get_formatted_changes / get_pending_agent_prompt, then apply_copy_variant (persist) or edit source, then crank_clear_changes / ack_pending_agent_prompt.'
   );
 
   return {
@@ -473,6 +562,9 @@ function getAgentQueueStatus() {
 
 module.exports = {
   buildAgentPrompt,
+  buildCompactCopyPrompt,
+  collectCopyChanges,
+  collectCopyChangesFromEdits,
   enqueueAgentTask,
   getPendingAgentTask,
   getPendingChanges,

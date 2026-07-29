@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "packageRoot": "/Users/ahmed.nawaz/Downloads/crank",
+  "projectRoot": "/Users/ahmed.nawaz/Downloads/crank/client",
+  "createdAt": "2026-07-25T16:33:37.038Z",
+  "environment": {
+    "isReplit": false,
+    "hasVite": true,
+    "viteConfig": "/Users/ahmed.nawaz/Downloads/crank/client/vite.config.ts",
+    "hasReact": true,
+    "hasNext": false,
+    "hasWebpack": false
+  }
+}

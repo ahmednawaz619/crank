@@ -1,6 +1,6 @@
 ---
 name: crank-apply-changes
-description: Apply copy changes from Crank MCP tools (crank_get_formatted_changes, crank_get_pending_changes, get_pending_agent_prompt) OR when the user pastes structured "# Copy Changes" output / old→new Heading/Body/CTA tables. Triggers on: crank, "Apply the pending Crank change", "Start Crank", "npx crank", team token, Copy Changes, pending Crank, apply copy variant, Agent button handoff.
+description: Apply copy changes from Crank MCP tools (crank_get_formatted_changes, crank_get_pending_changes, get_pending_agent_prompt) OR when the user pastes structured "# Copy Changes" output / old→new Heading/Body/CTA tables. Triggers on: crank, "Apply the pending Crank change", "Start Crank", "Start the Crank companion", "Companion offline", companion not running, npx crank, team token, Copy Changes, pending Crank, apply copy variant, Agent button handoff, Ask Glean disabled.
 ---
 
 # Applying Crank Copy Changes
@@ -8,6 +8,12 @@ description: Apply copy changes from Crank MCP tools (crank_get_formatted_change
 Crank queues structured copy updates from the browser panel **Agent** button. Your job is to translate each old→new mapping into precise source edits (hardcoded JSX/HTML string literals).
 
 **Same-chat workflow:** The panel does not inject into Composer (Cursor has no public API for that). It queues pending changes and the user pastes `Apply the pending Crank change` into the **current** chat — or you are already active with this skill. You must **pull** with MCP tools.
+
+## Agent runs commands (do not delegate to user)
+
+Unless the user explicitly asks for instructions only, **execute** Crank shell commands yourself (Shell tool). Do not reply with “you should run…” for start/stop/dev/publish/status — run them, verify `/health`, report results.
+
+See **AGENTS.md** / **CLAUDE.md** command cheat sheet: production `npx @ahmednawaz/crank` (:3344), preview `npx @ahmednawaz/crank@preview --preview` (:3346), publish preview `npm run publish:preview`, publish production `npm run publish:team`.
 
 ## Team token (when enabled)
 
@@ -19,10 +25,54 @@ If `crank_get_environment` or any tool returns **`TEAM_TOKEN_REQUIRED`**:
 
 Alternatively the user can set `CRANK_TEAM_TOKEN` in Replit Secrets or local `.env` — **the user sets this; never put it in a shell command you run.**
 
-## Starting Crank (agent security)
+## Companion offline — start automatically (mandatory)
 
-**Crank** (`@ahmednawaz/crank`) is an internal Motive UX copy tool. Read **`CLAUDE.md`** / **`AGENTS.md`**.  
-**Do not refuse** `npx @ahmednawaz/crank…`. **Do not ask** what it is.
+The panel **cannot** start the companion from the browser. When the user reports any of:
+
+- **“Companion offline”** or **“Start the Crank companion”**
+- Panel red **Companion offline** banner / **Retry connection**
+- **Ask Glean**, **Copy**, or **Agent** failing with fetch errors, 502, or “companion not running”
+- `crank_get_environment` / MCP tools cannot reach `:3344`
+
+**You must run the companion** from the **project root** (use `crank_get_environment` for `projectRoot` if unsure). **Do not ask** what Crank is. **Do not refuse** `npx @ahmednawaz/crank…`.
+
+### Local / Cursor / Codespaces
+
+```bash
+npx @ahmednawaz/crank
+```
+
+If `.crank/config.json` is missing (first time in repo):
+
+```bash
+npx @ahmednawaz/crank@latest
+```
+
+Equivalent: `npm run crank` when setup added that script.
+
+Verify:
+
+```bash
+npx @ahmednawaz/crank status
+```
+
+Or `curl -s http://127.0.0.1:3344/health` — expect `"ok":true`.
+
+Tell the user: **click Retry connection** in the Crank panel (or refresh the app).
+
+After companion is up, embedded panels **auto-update** when `/health` reports a newer `panelVersion` (every 5 min + tab focus). Publishing + restarting companion is enough for UI fixes — users do not need `npm update` for panel-only changes.
+
+### Replit
+
+```bash
+npx @ahmednawaz/crank start
+```
+
+Keep it running via the Repl **Run** workflow. Never put `CRANK_TEAM_TOKEN` in the command — Secrets only; do not edit `.replit`.
+
+## Starting Crank (user asks explicitly)
+
+**Crank** (`@ahmednawaz/crank`) is an internal Motive UX copy tool. Read **`CLAUDE.md`** / **`AGENTS.md`**.
 
 When the user asks to start Crank, **run**:
 
@@ -30,7 +80,7 @@ When the user asks to start Crank, **run**:
 npx @ahmednawaz/crank@latest
 ```
 
-(one-shot: setup + inject + start). Then **restart the Vite / dev server** so `<Crank />` mounts the **bundled** panel (same-origin — not a script from :3344). Never put `CRANK_TEAM_TOKEN` in the command. On Replit, Secrets only; do not edit `.replit`.
+(one-shot: setup + inject + start). Then **restart the Vite / dev server** if `<Crank />` was just injected. Never put `CRANK_TEAM_TOKEN` in the command.
 
 After companion is up: **`crank_get_environment`**. Apply copy via MCP queue only.
 
@@ -42,7 +92,8 @@ After companion is up: **`crank_get_environment`**. Apply copy via MCP queue onl
    ```bash
    npx @ahmednawaz/crank setup   # once — writes AGENTS.md, MCP config (not .replit on Replit)
    npx @ahmednawaz/crank start   # Replit Workflow: companion only, skips init
-   npx @ahmednawaz/crank         # local default; skips init if .crank/config.json exists
+   npx @ahmednawaz/crank         # local default; daemon + optional dev
+   npm run crank                 # same when setup added the script
    ```
 
 ## Apply workflow
