@@ -1,6 +1,6 @@
 'use strict';
 /** Bumped each release — invalidates Vite optimizeDeps cache for this entry. */
-const CRANK_REACT_LOADER_VERSION = "0.3.10";
+const CRANK_REACT_LOADER_VERSION = "0.3.11";
 
 
 /**

@@ -30,7 +30,11 @@ const {
 } = require('../lib/copy-dynamic');
 
 const SKILLS_DIR = path.resolve(__dirname, '..', 'skills');
-const DEFAULT_AGENT_ID = 'a866095fd53b419ab08338e3559fb7aa';
+/** Motive copywriting agent (same id as Figma “Crank Copy” plugin). */
+const COPYWRITING_AGENT_ID = '0e7e10189d2b4b8e8a6d4338bbea4dd0';
+/** Legacy Robot Content Designer — form `input` schema. */
+const LEGACY_FORM_AGENT_ID = 'a866095fd53b419ab08338e3559fb7aa';
+const DEFAULT_AGENT_ID = COPYWRITING_AGENT_ID;
 const STREAM_FIRST_BYTE_MS = Number(process.env.GLEAN_STREAM_FIRST_BYTE_MS || 12000);
 const WAIT_HEARTBEAT_MS = Number(process.env.GLEAN_WAIT_HEARTBEAT_MS || 3500);
 /** Overall cap for /runs/wait and stream-to-completion (Robot Content Designer ~90–140s). */
@@ -248,6 +252,117 @@ function draftLabelHint(session) {
   }
   if (nodes.length === 1) return 'Copy 1:';
   return 'Copy 1:, Copy 2:, … (same count as draft)';
+}
+
+function agentUsesFormInput(agentId) {
+  const flag = String(process.env.GLEAN_AGENT_USE_FORM_INPUT || '')
+    .trim()
+    .toLowerCase();
+  if (flag === 'true') return true;
+  if (flag === 'false') return false;
+  return String(agentId) === LEGACY_FORM_AGENT_ID;
+}
+
+function buildCopywritingUserPrompt(session, options = {}, optionCount) {
+  const draft =
+    formatDraft(session) ||
+    String(session?.combinedText || '').trim().slice(0, 1500);
+  const source = String(process.env.GLEAN_AGENT_SOURCE || 'crank-companion').trim();
+  const component = options.componentType || 'General UI string';
+  const labelHint = draftLabelHint(session);
+  return `Source: ${source}
+
+1. Human-written string:
+${draft || '(none)'}
+
+2. Component type: ${component}
+3. Timing: Before user action
+4. Functional requirements:
+   - Fleet user or driver: Fleet user
+   - How did they get to this screen: Live product UI (Crank selection)
+   - What is the user trying to do: Rewrite the human-written string(s) for clarity and tone
+   - What happens next: Not provided
+   - What are the action options for the user: Not provided
+   - What do the other existing strings around the component say: Not provided
+   - PRD/PDP link: Not provided
+   - Additional context: Return at least ${optionCount} copy alternatives. Label fields like the draft (${labelHint}). Include your markdown options table (Option N rows) for tooling.`;
+}
+
+/**
+ * Form-schema agents use `input`; copywriting agent uses conversational `messages`.
+ */
+function buildAgentRunBody(agentId, session, options = {}) {
+  const input = buildAgentInput(session, options);
+  const optionCount = input._crankOptionCount || DEFAULT_OPTION_COUNT;
+  if (agentUsesFormInput(agentId)) {
+    const { _crankOptionCount, ...gleanInput } = input;
+    return {
+      body: { agent_id: agentId, input: gleanInput },
+      optionCount,
+      preview: String(gleanInput['Enter in a human-written draft'] || '').slice(
+        0,
+        180
+      ),
+      agentLabel: 'Robot Content Designer'
+    };
+  }
+  const prompt = buildCopywritingUserPrompt(session, options, optionCount);
+  return {
+    body: {
+      agent_id: agentId,
+      messages: [
+        {
+          role: 'USER',
+          content: [{ type: 'text', text: prompt }]
+        }
+      ]
+    },
+    optionCount,
+    preview: prompt.slice(0, 180),
+    agentLabel: 'Glean copywriting agent'
+  };
+}
+
+function unescapeLiteralNewlines(text) {
+  return String(text || '').replace(/\\r\\n|\\n|\\r/g, '\n');
+}
+
+/** Pull markdown table from copywriting agent JSON ({ table, cards }). */
+function extractMarkdownTableFromAgentJson(rawText) {
+  let jsonText = String(rawText || '').trim();
+  if (!jsonText) return '';
+  const fenced =
+    jsonText.match(/```json\s*([\s\S]*?)\s*```/) ||
+    jsonText.match(/```\s*([\s\S]*?)\s*```/);
+  if (fenced) jsonText = fenced[1];
+  const start = jsonText.indexOf('{');
+  const end = jsonText.lastIndexOf('}');
+  const candidates = [jsonText];
+  if (start !== -1 && end > start) {
+    candidates.push(jsonText.slice(start, end + 1));
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (typeof parsed.table === 'string' && parsed.table.trim()) {
+        return unescapeLiteralNewlines(parsed.table).trim();
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  return '';
+}
+
+function parseOptionsFromAgentText(text, session, maxOptions) {
+  const table = extractMarkdownTableFromAgentJson(text);
+  if (table) {
+    const fromTable = parseOptionsFromText(table, session, maxOptions);
+    if (fromTable.length && fromTable[0].id !== 'glean-raw') {
+      return fromTable;
+    }
+  }
+  return parseOptionsFromText(text, session, maxOptions);
 }
 
 function buildAgentInput(session, options = {}) {
@@ -1051,32 +1166,24 @@ async function proposeCopyVariants(session, options = {}, onProgress) {
   }
 
   const agentId = process.env.GLEAN_AGENT_ID || DEFAULT_AGENT_ID;
-  const input = buildAgentInput(session, options);
-  const optionCount = input._crankOptionCount || DEFAULT_OPTION_COUNT;
-  const { _crankOptionCount, ...gleanInput } = input;
-  const body = {
-    agent_id: agentId,
-    input: gleanInput
-  };
+  const run = buildAgentRunBody(agentId, session, options);
+  const body = run.body;
+  const optionCount = run.optionCount;
+  const draftPreview = run.preview;
 
-  const draftPreview = String(
-    gleanInput['Enter in a human-written draft'] || ''
-  ).slice(0, 180);
   console.log(
     `[Crank] Glean draft (${draftPreview.length} chars shown): ${draftPreview.replace(/\n/g, ' | ')}`
   );
   console.log(
-    `[Crank] Glean fields: component=${gleanInput['Type of component']}; options=${optionCount}; feature=${String(
-      gleanInput['Explain the functionality of the feature'] || ''
-    ).slice(0, 100)}`
+    `[Crank] Glean agent=${agentId}; mode=${agentUsesFormInput(agentId) ? 'form' : 'messages'}; options=${optionCount}`
   );
 
   emit({
     stage: 'start',
-    text: `Sending copy to Robot Content Designer (${optionCount} options)…`,
+    text: `Sending copy to ${run.agentLabel} (${optionCount} options)…`,
     detail: 'Typically 1–2 min — most time is agent runtime, not network',
     partial: draftPreview,
-    latestThought: `Sending copy to Robot Content Designer (${optionCount} options)…`
+    latestThought: `Sending copy to ${run.agentLabel} (${optionCount} options)…`
   });
 
   // Prefer /runs/stream (live GLEAN_AI tokens after a silent agent phase).
@@ -1102,7 +1209,7 @@ async function proposeCopyVariants(session, options = {}, onProgress) {
         latestThought: 'Parsing streamed copy options…',
         live: true
       });
-      return parseOptionsFromText(streamed, session, optionCount);
+      return parseOptionsFromAgentText(streamed, session, optionCount);
     } catch (streamErr) {
       emit({
         stage: 'fallback',
@@ -1129,7 +1236,7 @@ async function proposeCopyVariants(session, options = {}, onProgress) {
     partial: text.slice(0, 2000),
     live: false
   });
-  return parseOptionsFromText(text, session, optionCount);
+  return parseOptionsFromAgentText(text, session, optionCount);
 }
 
 module.exports = {
@@ -1146,5 +1253,11 @@ module.exports = {
   draftLabelHint,
   isOriginalVariant,
   normalizeWs,
-  DEFAULT_AGENT_ID
+  DEFAULT_AGENT_ID,
+  COPYWRITING_AGENT_ID,
+  LEGACY_FORM_AGENT_ID,
+  agentUsesFormInput,
+  buildAgentRunBody,
+  parseOptionsFromAgentText,
+  extractMarkdownTableFromAgentJson
 };

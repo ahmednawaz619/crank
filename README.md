@@ -194,7 +194,9 @@ Expose `https://…/mcp` (tunnel or hosted) and add as a **custom MCP server** i
 
 Uses Motive Client API against `https://motive-prod-be.glean.com`.
 
-Default agent: **Robot Content Designer** (`a866095fd53b419ab08338e3559fb7aa`) — generates + scores UX string options.
+Default agent: **Motive copywriting agent** (`0e7e10189d2b4b8e8a6d4338bbea4dd0`) — same Agent Builder id as the **Figma Crank Copy** plugin. Uses conversational `messages` on `/agents/runs/*` (not the legacy form `input` schema).
+
+Legacy **Robot Content Designer** (`a866095fd53b419ab08338e3559fb7aa`) — set `GLEAN_AGENT_ID` + `GLEAN_AGENT_USE_FORM_INPUT=true`.
 
 Env vars (see `.env.example`; secrets live in `.env`, gitignored):
 
@@ -202,7 +204,9 @@ Env vars (see `.env.example`; secrets live in `.env`, gitignored):
 |----------|------|
 | `GLEAN_BASE_URL` | Instance backend, e.g. `https://motive-prod-be.glean.com` |
 | `GLEAN_API_KEY` | Client API bearer token |
-| `GLEAN_AGENT_ID` | Agent Builder id (default = Robot Content Designer) |
+| `GLEAN_AGENT_ID` | Agent Builder id (default = copywriting agent / Figma parity) |
+| `GLEAN_AGENT_USE_FORM_INPUT` | `true` = form `input` (legacy Robot Content Designer); auto-detected from agent id |
+| `GLEAN_AGENT_SOURCE` | `Source:` line for copywriting prompt (default `crank-companion`) |
 | `GLEAN_ACT_AS` | Optional; required for global tokens |
 | `GLEAN_STUB` | `true` = local stub variants; `false` = live agent |
 | `CRANK_GLEAN_OPTION_COUNT` | Max options to request/parse (default **3**; was 4, was 6) |

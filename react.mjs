@@ -11,7 +11,7 @@
 import { useEffect } from 'react';
 import { bootCrankPanel } from './panel-boot.mjs';
 /** Bumped each release — invalidates Vite optimizeDeps cache for this entry. */
-export const CRANK_REACT_LOADER_VERSION = "0.3.10";
+export const CRANK_REACT_LOADER_VERSION = "0.3.11";
 
 
 /**

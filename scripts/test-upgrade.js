@@ -13,7 +13,7 @@ const {
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crank-upgrade-'));
 const consumer = path.join(tmp, 'app');
 const crankRoot = path.join(consumer, 'node_modules', '@ahmednawaz', 'crank');
-fs.mkdirSync(path.join(crankRoot, 'scripts'), { recursive: true });
+fs.mkdirSync(path.join(crankRoot, 'lib'), { recursive: true });
 fs.mkdirSync(path.join(consumer, 'node_modules', '.vite', 'deps'), { recursive: true });
 fs.writeFileSync(
   path.join(consumer, 'package.json'),
@@ -28,8 +28,8 @@ fs.writeFileSync(
   'export const CRANK_REACT_LOADER_VERSION = "0.3.9";\n'
 );
 fs.copyFileSync(
-  path.join(__dirname, 'postinstall-consumer.js'),
-  path.join(crankRoot, 'scripts', 'postinstall-consumer.js')
+  path.join(__dirname, '..', 'lib', 'postinstall-consumer.js'),
+  path.join(crankRoot, 'lib', 'postinstall-consumer.js')
 );
 
 const cleared = clearViteDepCache(consumer);

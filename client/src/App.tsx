@@ -27,8 +27,11 @@ export default function App() {
           Get started
         </button>
       </div>
-      <p style={{ fontSize: '0.9rem', marginTop: '1.25rem', color: '#555' }}>
-        Crank panel loads via <code>&lt;Crank /&gt;</code>. Click <strong>Select</strong>, then the hero card.
+      <p style={{ fontSize: '0.9rem', marginTop: '1.25rem', color: '#555', lineHeight: 1.5 }}>
+        <strong>Get started</strong> above is sample copy only — it does not open Crank.
+        Use the floating <strong>Crank</strong> button (Glean logo, bottom-right): click it, then click this
+        card’s border (not required to hit Get started). Companion must be running (
+        <code>npx crank start</code>).
       </p>
     </main>
   );
