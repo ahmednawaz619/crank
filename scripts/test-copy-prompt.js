@@ -45,16 +45,16 @@ assert.strictEqual(changes[0].oldText, 'This month');
 assert.strictEqual(changes[0].newText, 'This month vs. last month');
 
 const { prompt } = buildCompactCopyPrompt({ session, variant });
-assert.ok(prompt.includes('Update UI copy in source files.'));
-assert.ok(
-  prompt.includes(
-    'Search the repo for each Old string and update every occurrence across the product'
-  )
-);
-assert.ok(prompt.includes('"This month" → "This month vs. last month"'));
-assert.ok(prompt.includes('"Compare to last month" → "See trends at a glance"'));
+assert.ok(prompt.includes('Replace each current string in place.'));
+assert.ok(prompt.includes('Do not add a new string'));
+assert.ok(prompt.includes('Where: div.hero > h1'));
+assert.ok(prompt.includes('Old: "This month"'));
+assert.ok(prompt.includes('New: "This month vs. last month"'));
+assert.ok(prompt.includes('Old: "Compare to last month"'));
+assert.ok(prompt.includes('New: "See trends at a glance"'));
+assert.ok(prompt.includes('list the files you changed'));
 assert.ok(!prompt.includes('| Field | Selector | Old | New |'));
-assert.ok(prompt.length < 800, 'compact prompt should stay short');
+assert.ok(prompt.length < 1600, 'compact prompt should stay pasteable');
 
 const editChanges = collectCopyChangesFromEdits({
   session,
@@ -75,9 +75,8 @@ const manualPrompt = buildCompactCopyPrompt({
   label: 'Manual edits'
 });
 assert.ok(manualPrompt.prompt.includes('Option: Manual edits'));
-assert.ok(
-  manualPrompt.prompt.includes('"This month" → "This month vs. last month"')
-);
+assert.ok(manualPrompt.prompt.includes('Old: "This month"'));
+assert.ok(manualPrompt.prompt.includes('New: "This month vs. last month"'));
 
 // Copy N must map to session node N-1 — junk Copy 1 ("/") must not shift prompts
 {

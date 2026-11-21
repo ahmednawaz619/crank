@@ -78,7 +78,7 @@
   }
 
   function vpChevronSvgHtml() {
-    return '<svg class="vp-field-select-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+    return '<svg class="vp-field-select-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 5L7 9.75L11.75 5"/></svg>';
   }
 
   function vpParseSelectOptions(optionsHtml) {
@@ -123,22 +123,50 @@
     if (!text || opts.hideLabel) {
       return '';
     }
+    const mark = opts.required
+      ? '<span class="vp-required-mark" aria-hidden="true">*</span>'
+      : '';
     return '<span class="vp-field-label-grid ' + sizeClass + ' vp-compact-control-typography">'
-      + '<span class="vp-field-label-reserve" aria-hidden="true">' + escapeHtml(text) + '</span>'
-      + '<span class="vp-field-label-visible">' + escapeHtml(text) + '</span>'
+      + '<span class="vp-field-label-reserve" aria-hidden="true">' + escapeHtml(text + (opts.required ? ' *' : '')) + '</span>'
+      + '<span class="vp-field-label-visible">' + escapeHtml(text) + mark + '</span>'
       + '</span>';
   }
 
   function vpFieldHtml(label, controlHtml, options) {
     const opts = options || {};
     const labelHtml = vpFieldLabelHtml(label, opts);
+    const layoutClass = opts.layout === 'inline' ? ' vp-field--inline' : '';
     const extraClass = opts.className ? ' ' + opts.className : '';
     const metaHtml = opts.metaHtml ? '<div class="vp-field-meta">' + opts.metaHtml + '</div>' : '';
-    return '<div class="vp-field' + extraClass + '">'
+    return '<div class="vp-field' + layoutClass + extraClass + '">'
       + labelHtml
       + (controlHtml || '')
       + metaHtml
+      + '<p class="vp-field-error crank-hidden" role="alert"></p>'
       + '</div>';
+  }
+
+  function vpOptionalFieldHtml(label, controlHtml, options) {
+    const opts = options || {};
+    const fieldId = String(opts.fieldId || '');
+    const extraClass = opts.className ? ' ' + opts.className : '';
+    const metaHtml = opts.metaHtml ? '<div class="vp-field-meta">' + opts.metaHtml + '</div>' : '';
+    const labelHtml = vpFieldLabelHtml(label, opts);
+    return (
+      '<div class="vp-field vp-field--optional' + extraClass + '" data-optional-field="' + escapeAttr(fieldId) + '">'
+      + '<div class="vp-field-optional-head">'
+      + '<button type="button" class="vp-field-optional-toggle" aria-expanded="false"'
+      + ' data-optional-toggle="' + escapeAttr(fieldId) + '" data-optional-state="collapsed">'
+      + '<span class="vp-field-optional-label">' + labelHtml + '</span>'
+      + '</button>'
+      + '</div>'
+      + '<div class="vp-field-optional-body crank-hidden" data-optional-body="' + escapeAttr(fieldId) + '">'
+      + (controlHtml || '')
+      + metaHtml
+      + '</div>'
+      + '<p class="vp-field-error crank-hidden" role="alert"></p>'
+      + '</div>'
+    );
   }
 
   function vpFieldSelectHtml(attrs, optionsHtml, options) {
@@ -190,15 +218,58 @@
     return vpFieldSelectHtml(attrs, optionsHtml, options);
   }
 
+  function vpFieldStaticTextHtml(attrs, content, options) {
+    const opts = options || {};
+    const size = opts.size === 'compact' ? 'compact' : 'default';
+    const shellClass = vpShellSizeClass(size);
+    const typeClass = size === 'compact' ? 'vp-compact-control-typography' : 'vp-control-typography';
+    const id = attrs && attrs.id ? String(attrs.id) : '';
+    const placeholder =
+      attrs && attrs.placeholder != null ? String(attrs.placeholder) : 'Select text on the page or add manually';
+    const text = String(content || '');
+    const isEmpty = !text.trim();
+    const displayText = isEmpty ? placeholder : text;
+    const hiddenAttrs = {
+      id: id,
+      class: 'vp-field-static-value crank-hidden',
+      'aria-hidden': 'true',
+      tabindex: '-1',
+      rows: '1'
+    };
+    const displayCls = vpJoinClasses(
+      'vp-field-static-display',
+      typeClass,
+      isEmpty ? 'is-placeholder' : ''
+    );
+    return (
+      '<div class="vp-field-static-text"' + (id ? ' data-static-field="' + escapeAttr(id) + '"' : '') + '>'
+      + '<textarea' + vpBuildTagAttrs(hiddenAttrs) + '>' + escapeHtml(text) + '</textarea>'
+      + '<div class="vp-input-surface vp-input-surface--static vp-control-surface ' + shellClass + '" data-crank-part="control-surface" style="width:100%;">'
+      + '<div class="' + displayCls + '"' + (id ? ' data-strings-display="' + escapeAttr(id) + '"' : '') + ' aria-live="polite">'
+      + escapeHtml(displayText)
+      + '</div></div></div>'
+    );
+  }
+
   function vpTextareaHtml(attrs, content, options) {
     const opts = options || {};
     const size = opts.size === 'compact' ? 'compact' : 'default';
     const typeClass = size === 'compact' ? 'vp-compact-control-typography' : 'vp-control-typography';
-    const areaAttrs = Object.assign({}, attrs || {}, { class: vpJoinClasses('vp-textarea-native', typeClass, attrs && attrs.class) });
+    const areaAttrs = Object.assign({}, attrs || {}, {
+      class: vpJoinClasses('vp-textarea-native', typeClass, opts.autogrow ? 'vp-textarea-autogrow' : '', attrs && attrs.class),
+      rows: attrs && attrs.rows != null ? attrs.rows : opts.autogrow ? '1' : attrs && attrs.rows
+    });
     const shellClass = vpShellSizeClass(size);
-    return '<div class="vp-input-surface vp-input-surface--textarea vp-control-surface ' + shellClass + '" data-crank-part="control-surface" style="width:100%;">'
+    const paragraphClass = opts.paragraph || opts.autogrow ? ' vp-input-surface--paragraph' : '';
+    return '<div class="vp-input-surface vp-input-surface--textarea' + paragraphClass + ' vp-control-surface ' + shellClass + '" data-crank-part="control-surface" style="width:100%;">'
       + '<textarea' + vpBuildTagAttrs(areaAttrs) + '>' + escapeHtml(content || '') + '</textarea>'
       + '</div>';
+  }
+
+  /** Canonical multiline copy field — autogrow paragraph shell (Glean + edit targets). */
+  function vpParagraphFieldHtml(attrs, content, options) {
+    const opts = Object.assign({ autogrow: true, paragraph: true, size: 'default' }, options || {});
+    return vpTextareaHtml(attrs, content, opts);
   }
 
   function vpButtonShellClasses(variant, size) {
@@ -317,7 +388,7 @@
   }
 
   function vpDividerHtml() {
-    return '<div class="vp-divider"></div>';
+    return '<div class="vp-panel-stroke" role="separator"></div>';
   }
 
   function vpSectionTitleHtml(text) {
@@ -337,9 +408,12 @@
     escapeHtml: escapeHtml,
     escapeAttr: escapeAttr,
     vpFieldHtml: vpFieldHtml,
+    vpFieldStaticTextHtml: vpFieldStaticTextHtml,
+    vpOptionalFieldHtml: vpOptionalFieldHtml,
     vpFieldLabelHtml: vpFieldLabelHtml,
     vpInputHtml: vpInputHtml,
     vpTextareaHtml: vpTextareaHtml,
+    vpParagraphFieldHtml: vpParagraphFieldHtml,
     vpButtonHtml: vpButtonHtml,
     vpButtonGroupHtml: vpButtonGroupHtml,
     vpFieldSelectHtml: vpFieldSelectHtml,

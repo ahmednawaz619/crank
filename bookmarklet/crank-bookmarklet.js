@@ -222,13 +222,14 @@
     if (box) box.style.display = 'none';
   }
 
-  async function registerSelection(payload) {
+  async function registerSelection(payload, options) {
     if (sendWs({ type: 'SET_SELECTION', payload: payload })) {
       /* SELECTION_ACK or POST sets sessionId */
     }
     const data = await postJson('/api/selection', payload);
     if (data.ok && data.session) {
       applySessionFromServer(data.session);
+      showFreshSelection();
       setStatus('Selection ready — preview/edit or Ask Glean');
       return true;
     }
@@ -339,21 +340,1046 @@
 
   let selectedEl = null;
   let selectedNodes = [];
+  let layerFocus = null;
+  let checkedLayers = [];
+  let layerCatalog = [];
   let sessionId = null;
   let socket = null;
   let selecting = false;
   let originalSnapshot = [];
   let lastVariants = [];
   let activeVariantId = null;
+  let previewedVariantId = null;
+  let previewRestore = [];
+  const historyStringMap = {};
+  let pageSenseTimer = null;
   /** Bumps on each Ask Glean; stale WS progress after variants must not reopen thinking. */
   let gleanEpoch = 0;
   let gleanActiveEpoch = 0;
   /** fab = logo only · selecting = pick layout · panel = full editor */
   let uiMode = 'fab';
   let fab = null;
+  let launcher = null;
+  let toolbarOpen = false;
+  let activeTool = 'select';
   let selectHint = null;
   const OPTION_COUNT_KEY = 'crank.gleanOptionCount';
+  const GLEAN_CONTEXT_KEY = 'crank.gleanContext';
   const DEFAULT_GLEAN_OPTION_COUNT = 3;
+  const GLEAN_OPTION_COUNT_MIN = 2;
+  const GLEAN_OPTION_COUNT_MAX = 7;
+  const GLEAN_STRING_TYPES = [
+    'General UI string',
+    'Action menu',
+    'Button',
+    'Dialog',
+    'Error',
+    'Feedback (e.g. toasts)',
+    'File upload',
+    'Placeholder text',
+    'Sidebar',
+    'Tables (bulk selection, sort, statuses)',
+    'Forms and inputs (cards, fields, dropdown, checkbox, radio, toggle, switch, slider)',
+    'Tooltip (popover)',
+    'Hyperlink',
+    'Pendo'
+  ];
+  const GLEAN_STRING_TYPE_DEFAULTS = {
+    'General UI string': 'Before',
+    Button: 'Before',
+    Dialog: 'After',
+    Error: 'After'
+  };
+  const GLEAN_FIELD_SELECTORS = {
+    humanStrings: '#vc-glean-strings',
+    componentType: '#vc-glean-component-type',
+    timing: '#vc-glean-timing',
+    userType: '#vc-glean-user-type',
+    entryPoint: '#vc-glean-entry-point',
+    userGoal: '#vc-glean-user-goal',
+    nextStep: '#vc-glean-next-step',
+    prdLink: '#vc-glean-prd'
+  };
+  let gleanContextTouched = false;
+  let gleanValidationRequested = false;
+  const GLEAN_REQUIRED_MSG = 'This field is required.';
+
+  let viewedRequestId = null;
+  const liveRequests = {};
+
+  function formatGleanDraftFromSelection() {
+    const list = assignUnitLabels(selectedNodes || []);
+    const lines = [];
+    list.forEach(function (node, index) {
+      const label = node.label || unitDisplayLabel(node, index, list);
+      const text = String(node.text != null ? node.text : '').trim();
+      if (!text) return;
+      lines.push(label + ': ' + text);
+    });
+    return lines.join('\n').slice(0, 1500);
+  }
+
+  function loadGleanContext() {
+    try {
+      const raw = localStorage.getItem(GLEAN_CONTEXT_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  function saveGleanContext(ctx) {
+    try {
+      localStorage.setItem(GLEAN_CONTEXT_KEY, JSON.stringify(ctx || {}));
+    } catch (_) {}
+  }
+
+  const GLEAN_FREE_TEXT_SELECTORS = [
+    '#vc-glean-entry-point',
+    '#vc-glean-user-goal',
+    '#vc-glean-next-step',
+    '#vc-glean-action-options',
+    '#vc-glean-surrounding',
+    '#vc-glean-prd',
+    '#vc-glean-additional'
+  ];
+
+  function readGleanContextFromPanel() {
+    const panelRoot = panel;
+    if (!panelRoot) return {};
+    const get = function (id) {
+      const el = panelRoot.querySelector(id);
+      return el ? String(el.value != null ? el.value : '').trim() : '';
+    };
+    return {
+      humanStrings: get('#vc-glean-strings'),
+      componentType: get('#vc-glean-component-type') || 'General UI string',
+      timing: get('#vc-glean-timing') || 'Before',
+      userType: get('#vc-glean-user-type') || 'Fleet user',
+      entryPoint: get('#vc-glean-entry-point'),
+      userGoal: get('#vc-glean-user-goal'),
+      nextStep: get('#vc-glean-next-step'),
+      actionOptions: get('#vc-glean-action-options'),
+      surroundingStrings: get('#vc-glean-surrounding'),
+      prdLink: get('#vc-glean-prd'),
+      additionalContext: get('#vc-glean-additional')
+    };
+  }
+
+  function isValidGleanUrl(text) {
+    const s = String(text || '').trim();
+    if (!s) return true;
+    try {
+      const u = new URL(s);
+      return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function validateGleanContextClient(ctx) {
+    const merged = Object.assign({}, readGleanContextFromPanel(), ctx || {});
+    const errors = [];
+    const fieldErrors = {};
+    if (!String(merged.humanStrings || '').trim()) {
+      errors.push(GLEAN_REQUIRED_MSG);
+      fieldErrors.humanStrings = GLEAN_REQUIRED_MSG;
+    }
+    if (GLEAN_STRING_TYPES.indexOf(merged.componentType) < 0) {
+      errors.push(GLEAN_REQUIRED_MSG);
+      fieldErrors.componentType = GLEAN_REQUIRED_MSG;
+    }
+    if (merged.timing !== 'Before' && merged.timing !== 'After') {
+      errors.push(GLEAN_REQUIRED_MSG);
+      fieldErrors.timing = GLEAN_REQUIRED_MSG;
+    }
+    if (merged.userType !== 'Fleet user' && merged.userType !== 'Driver') {
+      errors.push(GLEAN_REQUIRED_MSG);
+      fieldErrors.userType = GLEAN_REQUIRED_MSG;
+    }
+    if (!String(merged.entryPoint || '').trim()) {
+      errors.push(GLEAN_REQUIRED_MSG);
+      fieldErrors.entryPoint = GLEAN_REQUIRED_MSG;
+    }
+    if (!String(merged.userGoal || '').trim()) {
+      errors.push(GLEAN_REQUIRED_MSG);
+      fieldErrors.userGoal = GLEAN_REQUIRED_MSG;
+    }
+    if (!String(merged.nextStep || '').trim()) {
+      errors.push(GLEAN_REQUIRED_MSG);
+      fieldErrors.nextStep = GLEAN_REQUIRED_MSG;
+    }
+    if (merged.prdLink && !isValidGleanUrl(merged.prdLink)) {
+      const msg = 'Enter a valid link, like https://…';
+      errors.push(msg);
+      fieldErrors.prdLink = msg;
+    }
+    return {
+      ok: !errors.length,
+      errors: errors,
+      fieldErrors: fieldErrors,
+      context: merged
+    };
+  }
+
+  function updateGleanContextValidationUI(options) {
+    const opts = options || {};
+    const result = validateGleanContextClient();
+    const fieldsRoot = panel && panel.querySelector('#vc-glean-context');
+    const showErrors = !!(opts.showAll || gleanValidationRequested);
+    if (fieldsRoot) {
+      fieldsRoot.querySelectorAll('.vp-field').forEach(function (fieldEl) {
+        fieldEl.classList.remove('is-invalid');
+        const errEl = fieldEl.querySelector('.vp-field-error');
+        if (errEl) {
+          errEl.textContent = '';
+          errEl.classList.add('crank-hidden');
+        }
+      });
+    }
+    Object.keys(GLEAN_FIELD_SELECTORS).forEach(function (key) {
+      const el = panel && panel.querySelector(GLEAN_FIELD_SELECTORS[key]);
+      if (!el) return;
+      const message = result.fieldErrors[key] || '';
+      const invalid = !!message;
+      const fieldEl = el.closest ? el.closest('.vp-field') : null;
+      if (fieldEl && invalid && showErrors) {
+        fieldEl.classList.add('is-invalid');
+        const errEl = fieldEl.querySelector('.vp-field-error');
+        if (errEl) {
+          errEl.textContent = message;
+          errEl.classList.remove('crank-hidden');
+        }
+      }
+      if (el.setAttribute) {
+        el.setAttribute('aria-invalid', invalid && showErrors ? 'true' : 'false');
+      }
+    });
+    const errBox = panel && panel.querySelector('#vc-glean-context-errors');
+    if (errBox) {
+      errBox.className = 'vp-panel-block vp-panel-block--plain crank-hidden';
+      errBox.innerHTML = '';
+    }
+    return result;
+  }
+
+  function scrollToFirstGleanFieldError() {
+    if (!panel) return;
+    const invalid = panel.querySelector('#vc-glean-context .vp-field.is-invalid');
+    if (!invalid) return;
+    const optionalId = invalid.getAttribute('data-optional-field');
+    if (optionalId && !invalid.classList.contains('is-expanded')) {
+      revealOptionalGleanField(optionalId, { focus: false });
+    }
+    const scroller = panel.querySelector('.vp-panel-body');
+    if (scroller) {
+      const top =
+        invalid.getBoundingClientRect().top -
+        scroller.getBoundingClientRect().top +
+        scroller.scrollTop -
+        12;
+      scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    }
+    const control = invalid.querySelector('textarea, input:not([type="hidden"]), button');
+    if (control && control.focus) control.focus({ preventScroll: true });
+  }
+
+  function setGleanFieldValue(selector, value) {
+    const el = panel && panel.querySelector(selector);
+    if (!el) return;
+    el.value = value == null ? '' : String(value);
+    if (el.classList && el.classList.contains('vp-textarea-autogrow')) {
+      syncTextareaAutoGrow(el);
+    }
+  }
+
+  function prefillGleanStringsFromSelection(force) {
+    const area = panel && panel.querySelector('#vc-glean-strings');
+    if (!area) return;
+    const draft = formatGleanDraftFromSelection();
+    if (!draft) return;
+    if (force || !String(area.value || '').trim()) {
+      area.value = draft;
+      syncGleanStringsDisplay();
+    }
+  }
+
+  function persistGleanContextFromPanel() {
+    const ctx = readGleanContextFromPanel();
+    saveGleanContext({
+      componentType: ctx.componentType,
+      timing: ctx.timing,
+      userType: ctx.userType
+    });
+  }
+
+  function applySelectionToGleanForm() {
+    if (!panel) return;
+    setGleanFieldValue('#vc-glean-strings', formatGleanDraftFromSelection());
+    GLEAN_FREE_TEXT_SELECTORS.forEach(function (selector) {
+      setGleanFieldValue(selector, '');
+    });
+    gleanContextTouched = false;
+    gleanValidationRequested = false;
+    resetOptionalGleanFieldsUi();
+    persistGleanContextFromPanel();
+    updateGleanContextValidationUI();
+    syncGleanButton();
+    scheduleAutogrowSync(panel);
+  }
+
+  function closeAllFieldSelects(except) {
+    if (!panel) return;
+    panel.querySelectorAll('.vp-field-select.is-open').forEach(function (wrap) {
+      if (except && wrap === except) return;
+      wrap.classList.remove('is-open');
+      const trigger = wrap.querySelector('.vp-field-select-trigger');
+      if (trigger) {
+        trigger.setAttribute('aria-expanded', 'false');
+        if (typeof trigger.blur === 'function') {
+          trigger.blur();
+        }
+      }
+      const menu = wrap.querySelector('.vp-dropdown-menu');
+      if (menu) hideFieldSelectMenu(menu);
+      const field = wrap.closest('.vp-field');
+      if (field) field.classList.remove('is-active');
+      const surface = wrap.querySelector('.vp-input-surface');
+      if (surface) surface.removeAttribute('data-active');
+    });
+  }
+
+  function finishHideFieldSelectMenu(menu) {
+    if (!menu || menu.dataset.hideDone === '1') return;
+    menu.dataset.hideDone = '1';
+    menu.classList.add('crank-hidden');
+    menu.classList.remove('vp-dropdown-menu--closing');
+    clearFieldSelectMenuAnchor(menu);
+    delete menu.dataset.hideDone;
+  }
+
+  function hideFieldSelectMenu(menu) {
+    if (!menu || menu.classList.contains('crank-hidden')) return;
+    if (menu.classList.contains('vp-dropdown-menu--closing')) return;
+    menu.classList.add('vp-dropdown-menu--closing');
+    const onEnd = function (event) {
+      if (!event || event.target !== menu) return;
+      const name = String(event.animationName || '');
+      if (name.indexOf('vp-dropdown-out') !== 0) return;
+      menu.removeEventListener('animationend', onEnd);
+      finishHideFieldSelectMenu(menu);
+    };
+    menu.addEventListener('animationend', onEnd);
+    setTimeout(function () {
+      finishHideFieldSelectMenu(menu);
+    }, 200);
+  }
+
+  function clearFieldSelectMenuAnchor(menu) {
+    if (!menu) return;
+    menu.classList.remove(
+      'vp-dropdown-menu--drop-up',
+      'vp-dropdown-menu--anchored',
+      'vp-dropdown-menu--animate',
+      'is-scrolling'
+    );
+    menu.style.left = '';
+    menu.style.width = '';
+    menu.style.top = '';
+    menu.style.bottom = '';
+    menu.style.maxHeight = '';
+    menu.style.maxWidth = '';
+    menu.style.minWidth = '';
+    menu.style.visibility = '';
+    menu.style.overflowX = '';
+    menu.style.overflowY = '';
+    delete menu.dataset.placed;
+    delete menu.dataset.animated;
+  }
+
+  function bindOverlayScrollbar(el) {
+    if (!el || el.__crankOverlayScroll) return;
+    el.__crankOverlayScroll = true;
+    el.classList.add('vp-overlay-scroll');
+    const thumb = document.createElement('div');
+    thumb.className = 'vp-overlay-scrollbar';
+    thumb.setAttribute('aria-hidden', 'true');
+    el.appendChild(thumb);
+    let hideTimer = 0;
+    function paint() {
+      const max = el.scrollHeight - el.clientHeight;
+      if (max <= 1) {
+        thumb.style.opacity = '0';
+        return;
+      }
+      const track = el.clientHeight;
+      const size = Math.max(28, (track / el.scrollHeight) * track);
+      const travel = Math.max(0, track - size);
+      const top = (el.scrollTop / max) * travel;
+      thumb.style.height = size + 'px';
+      thumb.style.transform = 'translateY(' + top + 'px)';
+    }
+    el.addEventListener(
+      'scroll',
+      function () {
+        paint();
+        el.classList.add('is-scrolling');
+        if (hideTimer) clearTimeout(hideTimer);
+        hideTimer = setTimeout(function () {
+          el.classList.remove('is-scrolling');
+        }, 700);
+      },
+      { passive: true }
+    );
+  }
+
+  function placeAnchoredSelectMenu(menu, surface, opts) {
+    const gap = 6;
+    const viewportH = window.innerHeight || document.documentElement.clientHeight || 0;
+    const first = !menu.dataset.placed;
+    menu.classList.add('vp-dropdown-menu--anchored');
+    menu.classList.remove('crank-hidden');
+    if (first) menu.style.visibility = 'hidden';
+
+    const surfaceRect = surface.getBoundingClientRect();
+    menu.style.left = surfaceRect.left + 'px';
+    menu.style.width = surfaceRect.width + 'px';
+    menu.style.maxWidth = surfaceRect.width + 'px';
+    menu.style.minWidth = '0';
+    menu.style.boxSizing = 'border-box';
+    if (first) menu.style.maxHeight = 'none';
+    const natural = menu.scrollHeight;
+    const spaceAbove = Math.max(0, surfaceRect.top - gap);
+    const spaceBelow = Math.max(0, viewportH - surfaceRect.bottom - gap);
+    const openUp = natural <= spaceAbove || spaceAbove >= spaceBelow;
+    const available = openUp ? spaceAbove : spaceBelow;
+    const needsScroll = natural > available + 1;
+    menu.style.maxHeight = needsScroll ? available + 'px' : 'none';
+    menu.style.overflowX = 'hidden';
+    menu.style.overflowY = needsScroll ? 'auto' : 'hidden';
+    if (needsScroll) bindOverlayScrollbar(menu);
+    menu.classList.toggle('vp-dropdown-menu--drop-up', openUp);
+    if (openUp) {
+      menu.style.top = 'auto';
+      menu.style.bottom = viewportH - surfaceRect.top + gap + 'px';
+    } else {
+      menu.style.bottom = 'auto';
+      menu.style.top = surfaceRect.bottom + gap + 'px';
+    }
+    if (first) menu.style.visibility = 'visible';
+    menu.dataset.placed = '1';
+  }
+
+  function fieldSelectUsesAnchoredMenu(wrap) {
+    return !!(wrap && wrap.closest && wrap.closest('.vp-field--option-count'));
+  }
+
+  function syncFieldSelectMenuPlacement(wrap, opts) {
+    if (!wrap || !panel) return;
+    const menu = wrap.querySelector('.vp-dropdown-menu');
+    const surface = wrap.querySelector('.vp-input-surface');
+    const hidden = wrap.querySelector('.vp-field-select-value');
+    if (!menu || !surface) return;
+
+    if (fieldSelectUsesAnchoredMenu(wrap)) {
+      placeAnchoredSelectMenu(menu, surface, opts || {});
+      return;
+    }
+
+    clearFieldSelectMenuAnchor(menu);
+    if (menu.classList.contains('crank-hidden')) return;
+
+    const gap = 6;
+    const viewportH = window.innerHeight || document.documentElement.clientHeight || 0;
+    const surfaceRect = surface.getBoundingClientRect();
+    const menuH = menu.getBoundingClientRect().height || menu.scrollHeight || 0;
+    const spaceBelow = viewportH - surfaceRect.bottom - gap;
+    const spaceAbove = surfaceRect.top - gap;
+
+    if (spaceBelow < menuH && spaceAbove >= menuH) {
+      menu.classList.add('vp-dropdown-menu--drop-up');
+    } else if (spaceBelow < menuH && spaceAbove > spaceBelow) {
+      menu.classList.add('vp-dropdown-menu--drop-up');
+    }
+  }
+
+  function syncFieldSelectUi(wrap) {
+    if (!wrap) return;
+    const hidden = wrap.querySelector('.vp-field-select-value');
+    const triggerLabel = wrap.querySelector('.vp-field-select-label');
+    const menu = wrap.querySelector('.vp-dropdown-menu');
+    if (!hidden || !menu) return;
+    const currentValue = String(hidden.value || '');
+    menu.querySelectorAll('.vp-menu-item').forEach(function (item) {
+      const isChecked = item.getAttribute('data-value') === currentValue;
+      item.classList.toggle('is-checked', isChecked);
+      item.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+      let check = item.querySelector('.vp-menu-item__check');
+      if (isChecked && !check) {
+        item.insertAdjacentHTML(
+          'beforeend',
+          '<svg class="vp-menu-item__check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12L9 17L20 6"/></svg>'
+        );
+      } else if (!isChecked && check) {
+        check.remove();
+      }
+      if (isChecked && triggerLabel) {
+        const labelNode = item.querySelector('.vp-menu-item__label');
+        triggerLabel.textContent = labelNode ? labelNode.textContent : currentValue;
+      }
+    });
+  }
+
+  function setFieldSelectValue(inputId, value) {
+    const hidden = panel && panel.querySelector('#' + inputId);
+    if (!hidden) return;
+    hidden.value = String(value || '');
+    const wrap = hidden.closest('.vp-field-select');
+    if (wrap) syncFieldSelectUi(wrap);
+  }
+
+  function initFieldControls() {
+    if (!panel || panel.__crankFieldControlsInit) return;
+    panel.__crankFieldControlsInit = true;
+
+    panel.addEventListener('focusin', function (event) {
+      const target = event.target;
+      if (
+        target &&
+        target.closest &&
+        target.closest('[data-optional-toggle]')
+      ) {
+        return;
+      }
+      const field =
+        target && target.closest ? target.closest('.vp-field') : null;
+      if (!field || !panel.contains(field)) return;
+      field.classList.add('is-active');
+      const surface = field.querySelector(
+        '[data-crank-part="control-surface"], .vp-input-surface, .vp-control-surface'
+      );
+      if (surface) surface.setAttribute('data-active', 'true');
+    });
+
+    panel.addEventListener('focusout', function (event) {
+      const field =
+        event.target && event.target.closest
+          ? event.target.closest('.vp-field')
+          : null;
+      if (!field || !panel.contains(field)) return;
+      const next = event.relatedTarget;
+      if (!next || !field.contains(next)) {
+        field.classList.remove('is-active');
+        const surface = field.querySelector(
+          '[data-crank-part="control-surface"], .vp-input-surface, .vp-control-surface'
+        );
+        if (surface && !field.contains(document.activeElement)) {
+          surface.removeAttribute('data-active');
+        }
+      }
+    });
+
+    panel.addEventListener('click', function (event) {
+      const target = event.target;
+      if (!target || !target.closest) return;
+
+      const menuItem = target.closest('.vp-menu-item');
+      if (menuItem && panel.contains(menuItem) && !menuItem.disabled) {
+        event.preventDefault();
+        const wrap = menuItem.closest('.vp-field-select');
+        const hidden = wrap ? wrap.querySelector('.vp-field-select-value') : null;
+        if (hidden) {
+          hidden.value = menuItem.getAttribute('data-value') || '';
+          syncFieldSelectUi(wrap);
+          hidden.dispatchEvent(new Event('change', { bubbles: true }));
+          hidden.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        closeAllFieldSelects(null);
+        return;
+      }
+
+      const trigger = target.closest('.vp-field-select-trigger');
+      if (trigger && panel.contains(trigger)) {
+        event.preventDefault();
+        const wrap = trigger.closest('.vp-field-select');
+        if (!wrap) return;
+        const isOpen = wrap.classList.contains('is-open');
+        closeAllFieldSelects(isOpen ? null : wrap);
+        if (!isOpen) {
+          wrap.classList.add('is-open');
+          trigger.setAttribute('aria-expanded', 'true');
+          if (fieldSelectUsesAnchoredMenu(wrap)) {
+            syncFieldSelectMenuPlacement(wrap, { animate: true });
+          } else {
+            const menu = wrap.querySelector('.vp-dropdown-menu');
+            if (menu) menu.classList.remove('crank-hidden');
+            const openWrap = wrap;
+            if (typeof requestAnimationFrame === 'function') {
+              requestAnimationFrame(function () {
+                requestAnimationFrame(function () {
+                  syncFieldSelectMenuPlacement(openWrap);
+                });
+              });
+            } else {
+              setTimeout(function () {
+                syncFieldSelectMenuPlacement(openWrap);
+              }, 0);
+            }
+          }
+        }
+      }
+    });
+
+    if (!panel.__crankFieldSelectRepositionInit) {
+      panel.__crankFieldSelectRepositionInit = true;
+      const repositionOpenSelectMenus = function () {
+        if (!panel) return;
+        panel.querySelectorAll('.vp-field-select.is-open').forEach(function (wrap) {
+          syncFieldSelectMenuPlacement(wrap);
+        });
+      };
+      panel.addEventListener('scroll', repositionOpenSelectMenus, true);
+      window.addEventListener('resize', repositionOpenSelectMenus);
+    }
+
+    if (!document.__crankFieldSelectOutsideInit) {
+      document.__crankFieldSelectOutsideInit = true;
+      document.addEventListener(
+        'mousedown',
+        function (event) {
+          if (!panel) return;
+          const target = event.target;
+          if (target && target.closest) {
+            if (target.closest('.vp-field-select.is-open')) return;
+            if (target.closest('.vp-dropdown-menu')) return;
+          }
+          closeAllFieldSelects(null);
+        },
+        true
+      );
+      document.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape') closeAllFieldSelects(null);
+      });
+    }
+  }
+
+  function gleanRequiredLabel(text) {
+    return text;
+  }
+
+  function panelParagraphField(id, extraAttrs, content) {
+    const ui = UI();
+    const build = ui.vpParagraphFieldHtml || ui.vpTextareaHtml;
+    const attrs = Object.assign({ id: id, rows: '1' }, extraAttrs || {});
+    return build(attrs, content || '', { autogrow: true, paragraph: true });
+  }
+
+  function gleanAutoGrowArea(id, extraAttrs) {
+    return panelParagraphField(id, extraAttrs, '');
+  }
+
+  function gleanStringsFieldHtml() {
+    return panelParagraphField('vc-glean-strings', {
+      placeholder: 'Select text on the page or add manually'
+    });
+  }
+
+  function syncGleanStringsDisplay() {
+    if (!panel) return;
+    const area = panel.querySelector('#vc-glean-strings');
+    if (area && area.classList && area.classList.contains('vp-textarea-autogrow')) {
+      syncTextareaAutoGrow(area);
+    }
+  }
+
+  function gleanOptionalField(label, fieldId, controlHtml, options) {
+    const ui = UI();
+    const optional =
+      ui.vpOptionalFieldHtml ||
+      function (lbl, ctrl, opts) {
+        return (ui.vpFieldHtml || function (l, c) {
+          return '<div>' + l + c + '</div>';
+        })(lbl, ctrl, opts);
+      };
+    return optional(label, controlHtml, Object.assign({ fieldId: fieldId }, options || {}));
+  }
+
+  function setOptionalGleanFieldExpanded(fieldId, expanded) {
+    if (!panel || !fieldId) return;
+    const body = panel.querySelector('[data-optional-body="' + fieldId + '"]');
+    const toggle = panel.querySelector('[data-optional-toggle="' + fieldId + '"]');
+    const field = panel.querySelector('[data-optional-field="' + fieldId + '"]');
+    if (!body || !toggle) return;
+    if (expanded) {
+      body.classList.remove('crank-hidden');
+      toggle.setAttribute('aria-expanded', 'true');
+      toggle.setAttribute('data-optional-state', 'expanded');
+      if (field) field.classList.add('is-expanded');
+    } else {
+      body.classList.add('crank-hidden');
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.setAttribute('data-optional-state', 'collapsed');
+      if (field) field.classList.remove('is-expanded');
+    }
+  }
+
+  function revealOptionalGleanField(fieldId, options) {
+    const opts = options || {};
+    setOptionalGleanFieldExpanded(fieldId, true);
+    const body = panel && panel.querySelector('[data-optional-body="' + fieldId + '"]');
+    if (body) {
+      scheduleAutogrowSync(body);
+    }
+    if (opts.focus) {
+      const input = body && body.querySelector('textarea, input');
+      if (input) input.focus();
+    }
+  }
+
+  function collapseOptionalGleanField(fieldId, options) {
+    const opts = options || {};
+    if (!panel || !fieldId) return;
+    const body = panel.querySelector('[data-optional-body="' + fieldId + '"]');
+    if (opts.clear && body) {
+      body.querySelectorAll('input, textarea').forEach(function (el) {
+        el.value = '';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    }
+    setOptionalGleanFieldExpanded(fieldId, false);
+    if (opts.clear) {
+      gleanContextTouched = true;
+      persistGleanContextFromPanel();
+      updateGleanContextValidationUI();
+      syncGleanButton();
+    }
+  }
+
+  function resetOptionalGleanFieldsUi() {
+    if (!panel) return;
+    panel.querySelectorAll('[data-optional-field]').forEach(function (fieldEl) {
+      const fieldId = fieldEl.getAttribute('data-optional-field');
+      if (fieldId) collapseOptionalGleanField(fieldId, { clear: false });
+    });
+  }
+
+  function syncTextareaAutoGrow(textarea, attempt) {
+    if (!textarea || !textarea.classList || !textarea.classList.contains('vp-textarea-autogrow')) {
+      return;
+    }
+    const tries = attempt == null ? 0 : attempt;
+    if (textarea.clientWidth < 2) {
+      if (tries < 12) {
+        setTimeout(function () {
+          syncTextareaAutoGrow(textarea, tries + 1);
+        }, 50);
+      }
+      return;
+    }
+    const surface = textarea.closest('.vp-input-surface--textarea');
+    const style = getComputedStyle(textarea);
+    const lineH = parseFloat(style.lineHeight) || 18;
+    const padY =
+      (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+    const maxH = parseFloat(style.maxHeight);
+    const innerMax =
+      Number.isFinite(maxH) && maxH > 0
+        ? maxH
+        : (parseFloat(
+            getComputedStyle(document.getElementById('vp-shell') || document.documentElement)
+              .getPropertyValue('--vp-textarea-autogrow-max')
+          ) || 216);
+    const singleLineBox = lineH + padY;
+
+    if (textarea.__crankGrowing) return;
+    textarea.__crankGrowing = true;
+    textarea.style.minHeight = '0';
+    textarea.style.height = '0px';
+    const scrollH = textarea.scrollHeight;
+    const hardLines = String(textarea.value || '').split('\n').length;
+    const contentH = Math.min(Math.max(scrollH, singleLineBox, lineH * hardLines + padY), innerMax);
+    const hasHardBreak = hardLines > 1;
+    const multiline =
+      scrollH > singleLineBox + 1 || (hasHardBreak && scrollH > lineH);
+    textarea.style.height = contentH + 'px';
+    textarea.style.overflowY = scrollH > innerMax ? 'auto' : 'hidden';
+
+    if (surface) {
+      surface.style.height = '';
+      surface.style.minHeight = '';
+      surface.classList.toggle('is-multiline', multiline);
+    }
+    textarea.__crankGrowing = false;
+    if (panel && panel.__crankGrowResize && textarea.__crankGrowObserved !== true) {
+      textarea.__crankGrowObserved = true;
+      panel.__crankGrowResize.observe(textarea);
+    }
+  }
+
+  function syncAllAutoGrowTextareas(root) {
+    const scope = root && root.querySelectorAll ? root : panel;
+    if (!scope) return;
+    scope.querySelectorAll('.vp-textarea-autogrow').forEach(syncTextareaAutoGrow);
+  }
+
+  function scheduleAutogrowSync(root) {
+    const scope = root && root.querySelectorAll ? root : panel;
+    if (!scope) return;
+    const run = function () {
+      syncAllAutoGrowTextareas(scope);
+    };
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(run);
+      });
+    } else {
+      setTimeout(run, 16);
+    }
+    setTimeout(run, 120);
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(run).catch(function () {});
+    }
+  }
+
+  function bindTextareaAutoGrow() {
+    if (!panel || panel.__crankAutoGrowBound) return;
+    panel.__crankAutoGrowBound = true;
+    panel.addEventListener('input', function (event) {
+      const target = event.target;
+      if (target && target.classList && target.classList.contains('vp-textarea-autogrow')) {
+        syncTextareaAutoGrow(target);
+      }
+    });
+    if (!panel.__crankGrowResize && typeof ResizeObserver === 'function') {
+      panel.__crankGrowResize = new ResizeObserver(function (entries) {
+        entries.forEach(function (entry) {
+          const el = entry.target;
+          if (!el || el.__crankGrowing) return;
+          if (el.classList && el.classList.contains('vp-textarea-autogrow')) {
+            syncTextareaAutoGrow(el);
+          }
+        });
+      });
+    }
+    if (!panel.__crankGrowWatch && typeof MutationObserver === 'function') {
+      panel.__crankGrowWatch = new MutationObserver(function () {
+        scheduleAutogrowSync(panel);
+      });
+      panel.__crankGrowWatch.observe(panel, {
+        attributes: true,
+        attributeFilter: ['data-crank-view', 'data-crank-step']
+      });
+    }
+  }
+
+  function bindOptionalGleanFields() {
+    if (!panel || panel.__crankOptionalGleanBound) return;
+    panel.__crankOptionalGleanBound = true;
+    panel.addEventListener(
+      'mousedown',
+      function (event) {
+        const btn =
+          event.target && event.target.closest
+            ? event.target.closest('[data-optional-toggle]')
+            : null;
+        if (btn && panel.contains(btn)) {
+          event.preventDefault();
+        }
+      },
+      true
+    );
+    panel.addEventListener('click', function (event) {
+      const btn =
+        event.target && event.target.closest
+          ? event.target.closest('[data-optional-toggle]')
+          : null;
+      if (!btn || !panel.contains(btn)) return;
+      const fieldId = btn.getAttribute('data-optional-toggle');
+      if (!fieldId) return;
+      event.preventDefault();
+      const expanded = btn.getAttribute('data-optional-state') === 'expanded';
+      if (expanded) {
+        collapseOptionalGleanField(fieldId, { clear: false });
+      } else {
+        revealOptionalGleanField(fieldId, { focus: true });
+      }
+    });
+  }
+
+
+  function buildGleanOptionsHtml(ui) {
+    const field = ui.vpFieldHtml;
+    const select = ui.vpFieldSelectHtml || ui.vpSelectHtml;
+    const countOpts = [2, 3, 4, 5, 6, 7].map(function (n) {
+      return {
+        value: String(n),
+        label: String(n),
+        selected: n === DEFAULT_GLEAN_OPTION_COUNT
+      };
+    });
+    return field(
+      'Max alternatives to show',
+      select({ id: 'vc-option-count' }, '', { options: countOpts, width: 'calc(4.75rem + 8px)' }),
+      { layout: 'inline', className: 'vp-field--option-count' }
+    );
+  }
+
+  function buildGleanContextFormHtml(ui) {
+    const field = ui.vpFieldHtml;
+    const select = ui.vpFieldSelectHtml || ui.vpSelectHtml;
+    const componentOpts = GLEAN_STRING_TYPES.map(function (t) {
+      return { value: t, label: t, selected: t === 'General UI string' };
+    });
+    const timingOpts = [
+      {
+        value: 'Before',
+        label: 'Before: strings shown before user action',
+        selected: true
+      },
+      {
+        value: 'After',
+        label: 'After: strings shown after user action',
+        selected: false
+      }
+    ];
+    const userOpts = [
+      { value: 'Fleet user', label: 'Fleet user', selected: true },
+      { value: 'Driver', label: 'Driver', selected: false }
+    ];
+
+    return (
+      '<section class="vp-panel-section-group" id="vc-glean-context">' +
+      '<div class="vp-panel-block">' +
+      field(
+        gleanRequiredLabel('Your string(s)'),
+        gleanStringsFieldHtml(),
+        { required: true }
+      ) +
+      field(
+        gleanRequiredLabel('Component type'),
+        select({ id: 'vc-glean-component-type' }, '', { options: componentOpts }),
+        { required: true }
+      ) +
+      field(
+        gleanRequiredLabel('Timing'),
+        select({ id: 'vc-glean-timing' }, '', { options: timingOpts }),
+        { required: true }
+      ) +
+      '</div>' +
+      '<div class="vp-panel-block">' +
+      '<div class="vp-glean-section-head">' +
+      '<div class="vp-type-label">Functional requirements</div>' +
+      '<p class="vp-subtle" style="margin:0;">Explain this feature to a colleague.</p>' +
+      '</div>' +
+      field(
+        gleanRequiredLabel('Is this for a fleet user or driver?'),
+        select({ id: 'vc-glean-user-type' }, '', { options: userOpts }),
+        { required: true }
+      ) +
+      field(
+        gleanRequiredLabel('How did they get to this screen?'),
+        gleanAutoGrowArea('vc-glean-entry-point'),
+        { required: true }
+      ) +
+      field(
+        gleanRequiredLabel('What is the user trying to do?'),
+        gleanAutoGrowArea('vc-glean-user-goal'),
+        { required: true }
+      ) +
+      field(
+        gleanRequiredLabel('What happens next?'),
+        gleanAutoGrowArea('vc-glean-next-step'),
+        { required: true }
+      ) +
+      gleanOptionalField(
+        'What are the action options for the user?',
+        'vc-glean-action-options',
+        gleanAutoGrowArea('vc-glean-action-options')
+      ) +
+      gleanOptionalField(
+        'What do the other existing strings around the component say?',
+        'vc-glean-surrounding',
+        gleanAutoGrowArea('vc-glean-surrounding')
+      ) +
+      gleanOptionalField(
+        'PRD/PDP link',
+        'vc-glean-prd',
+        gleanAutoGrowArea('vc-glean-prd', {
+          placeholder: 'https://…',
+          autocomplete: 'off',
+          spellcheck: 'false',
+          inputmode: 'url'
+        })
+      ) +
+      gleanOptionalField(
+        'Additional context',
+        'vc-glean-additional',
+        gleanAutoGrowArea('vc-glean-additional')
+      ) +
+      '</div>' +
+      '<div id="vc-glean-context-errors" class="vp-panel-block vp-panel-block--plain crank-hidden"></div>' +
+      '</section>'
+    );
+  }
+
+  function bindGleanContextForm() {
+    if (!panel || panel.__crankGleanContextBound) return;
+    panel.__crankGleanContextBound = true;
+    const ids = [
+      '#vc-glean-strings',
+      '#vc-glean-component-type',
+      '#vc-glean-timing',
+      '#vc-glean-user-type',
+      '#vc-glean-entry-point',
+      '#vc-glean-user-goal',
+      '#vc-glean-next-step',
+      '#vc-glean-action-options',
+      '#vc-glean-surrounding',
+      '#vc-glean-prd',
+      '#vc-glean-additional'
+    ];
+    ids.forEach(function (sel) {
+      const el = panel.querySelector(sel);
+      if (!el) return;
+      const onFormChange = function () {
+        gleanContextTouched = true;
+        persistGleanContextFromPanel();
+        updateGleanContextValidationUI();
+        syncGleanButton();
+      };
+      el.addEventListener('input', onFormChange);
+      el.addEventListener('change', onFormChange);
+    });
+    const typeSel = panel.querySelector('#vc-glean-component-type');
+    if (typeSel) {
+      typeSel.addEventListener('change', function () {
+        const def = GLEAN_STRING_TYPE_DEFAULTS[typeSel.value];
+        if (def) setFieldSelectValue('vc-glean-timing', def);
+        gleanContextTouched = true;
+        persistGleanContextFromPanel();
+        updateGleanContextValidationUI();
+        syncGleanButton();
+      });
+    }
+    const stored = loadGleanContext();
+    if (stored.componentType) {
+      setFieldSelectValue('vc-glean-component-type', stored.componentType);
+    }
+    if (stored.timing) setFieldSelectValue('vc-glean-timing', stored.timing);
+    if (stored.userType) setFieldSelectValue('vc-glean-user-type', stored.userType);
+    persistGleanContextFromPanel();
+    panel.querySelectorAll('.vp-field-select').forEach(function (wrap) {
+      syncFieldSelectUi(wrap);
+    });
+    resetOptionalGleanFieldsUi();
+    syncGleanStringsDisplay();
+    scheduleAutogrowSync(panel);
+    updateGleanContextValidationUI();
+    syncGleanButton();
+  }
 
   function normalizeRole(role) {
     return String(role || 'text').toLowerCase();
@@ -411,7 +1437,7 @@
     const raw = sel ? sel.value : localStorage.getItem(OPTION_COUNT_KEY);
     const n = parseInt(String(raw || DEFAULT_GLEAN_OPTION_COUNT), 10);
     if (!Number.isFinite(n)) return DEFAULT_GLEAN_OPTION_COUNT;
-    return Math.min(6, Math.max(2, n));
+    return Math.min(GLEAN_OPTION_COUNT_MAX, Math.max(GLEAN_OPTION_COUNT_MIN, n));
   }
 
   const highlight = document.createElement('div');
@@ -422,8 +1448,31 @@
   const panel = document.createElement('div');
   panel.id = 'vp-shell';
   panel.setAttribute('data-crank-panel', '1');
+  panel.setAttribute('data-crank-surface', 'crank');
   panel.style.cssText =
-    'position:fixed;top:16px;right:16px;width:380px;max-height:calc(100vh - 32px);overflow:auto;z-index:2147483647;';
+    'position:fixed;top:16px;right:16px;width:380px;height:calc(100vh - 32px);max-height:calc(100vh - 32px);overflow:hidden;z-index:2147483647;overscroll-behavior:none;';
+  panel.addEventListener(
+    'wheel',
+    function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      let node = ev.target && ev.target.nodeType === 1 ? ev.target : ev.target && ev.target.parentElement;
+      while (node && node !== panel) {
+        if (node.scrollHeight > node.clientHeight + 1) {
+          const oy = window.getComputedStyle(node).overflowY;
+          if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') {
+            node.scrollTop += ev.deltaY;
+            if (ev.deltaX) node.scrollLeft += ev.deltaX;
+            return;
+          }
+        }
+        node = node.parentElement;
+      }
+      const body = panel.querySelector('#vp-body');
+      if (body) body.scrollTop += ev.deltaY;
+    },
+    { passive: false, capture: true }
+  );
 
   function UI() {
     return window.CrankUI || {};
@@ -489,24 +1538,77 @@
     return 'npx @ahmednawaz/crank@latest';
   }
 
-  function updateCompanionOfflineCopy() {
-    const cmdEl = panel && panel.querySelector('#vc-companion-cmd');
-    const agentEl = panel && panel.querySelector('#vc-companion-agent-phrase');
-    if (cmdEl) cmdEl.textContent = companionStartCommand();
-    if (agentEl) agentEl.textContent = COMPANION_AGENT_PHRASE;
+  let companionRetryTimer = null;
+
+  function companionDiagnosePrompt() {
+    return [
+      'The Crank companion is offline. The panel cannot reach it at ' + COMPANION_HTTP + '.',
+      '',
+      'Diagnose why it is down, then start it and leave it running.',
+      '',
+      '1. Check whether anything is listening on 127.0.0.1:3344.',
+      '2. From the Crank project root, start it with: ' + companionStartCommand(),
+      '3. Confirm ' + COMPANION_HTTP + '/health returns ok.',
+      '4. If it fails, read the companion output and fix the cause. Do not print secrets from .env.',
+      '5. Leave the companion running so the panel can reconnect on its own.'
+    ].join('\n');
+  }
+
+  function stopCompanionAutoRetry() {
+    if (companionRetryTimer) {
+      clearInterval(companionRetryTimer);
+      companionRetryTimer = null;
+    }
+  }
+
+  function startCompanionAutoRetry() {
+    if (companionRetryTimer) return;
+    companionRetryTimer = setInterval(function () {
+      const box = panel && panel.querySelector('#vc-companion-offline');
+      if (!panel || !box || box.classList.contains('crank-hidden') || uiMode !== 'panel') {
+        stopCompanionAutoRetry();
+        return;
+      }
+      const probe =
+        typeof window.__crankProbeCompanion === 'function'
+          ? window.__crankProbeCompanion
+          : null;
+      if (probe) probe();
+    }, 3000);
   }
 
   function showCompanionOfflineUI() {
     if (!panel || uiMode !== 'panel') return;
     ensurePanelMounted();
-    updateCompanionOfflineCopy();
     const box = panel.querySelector('#vc-companion-offline');
-    if (box) box.style.display = 'block';
+    if (box) {
+      box.classList.remove('crank-hidden');
+      box.style.display = 'block';
+    }
+    startCompanionAutoRetry();
   }
 
   function hideCompanionOfflineUI() {
+    stopCompanionAutoRetry();
     const box = panel && panel.querySelector('#vc-companion-offline');
-    if (box) box.style.display = 'none';
+    if (box) {
+      box.classList.add('crank-hidden');
+      box.style.display = 'none';
+    }
+  }
+
+  function setAgentStatus(mode, text) {
+    const el = panel && panel.querySelector('#vc-agent-status');
+    if (!el) return;
+    const offline = mode === 'offline';
+    el.classList.toggle('is-offline', offline);
+    el.classList.toggle('is-running', !offline && mode !== 'checking');
+    el.classList.toggle('is-checking', mode === 'checking');
+    el.textContent =
+      text ||
+      (offline
+        ? 'Agent not running'
+        : 'Agent running');
   }
 
   async function retryCompanionConnection() {
@@ -530,10 +1632,7 @@
       } catch (_) {}
       checkPanelUpdate(COMPANION_HTTP, { quiet: true });
     } else {
-      showToast(
-        'Still offline — run the terminal command below or paste the agent phrase in Cursor chat',
-        'error'
-      );
+      showToast('Still offline. Crank will keep checking.', 'error');
     }
   }
 
@@ -684,45 +1783,267 @@
     if (!(el instanceof Element)) return false;
     return !!(
       el.closest('#vp-shell') ||
+      el.closest('#vp-crank-launcher') ||
       el.closest('#vp-crank-fab') ||
       el.closest('#vp-crank-select-hint') ||
       el.id === 'crank-highlight'
     );
   }
 
+  function toolIcon(name) {
+    const open =
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">';
+    const close = '</svg>';
+    if (name === 'select') {
+      return open + '<path d="M5.2 3.1a1 1 0 0 0-1.1 1.35l5.4 14.2a1 1 0 0 0 1.86.08l1.7-4.35 4.55-1.52a1 1 0 0 0 .08-1.86L6.5 3.2a1 1 0 0 0-1.3-.1Z"/>' + close;
+    }
+    if (name === 'history') {
+      return open + '<path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25Zm.75 4.5a.75.75 0 0 0-1.5 0v5.25c0 .2.08.39.22.53l3.25 3.25a.75.75 0 1 0 1.06-1.06l-3.03-3.03V6.75Z" clip-rule="evenodd"/>' + close;
+    }
+    if (name === 'settings') {
+      return open + '<path fill-rule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 5.89a8.094 8.094 0 0 0-1.784.94l-1.8-.9a1.875 1.875 0 0 0-2.322.652l-.9 1.56a1.875 1.875 0 0 0 .394 2.317l1.5 1.3a8.16 8.16 0 0 0 0 2.482l-1.5 1.3a1.875 1.875 0 0 0-.394 2.317l.9 1.56c.48.83 1.51 1.17 2.322.652l1.8-.9c.55.4 1.15.72 1.784.94l.178 2.073c.151.904.933 1.567 1.85 1.567h1.844c.917 0 1.699-.663 1.85-1.567l.178-2.073a8.094 8.094 0 0 0 1.784-.94l1.8.9a1.875 1.875 0 0 0 2.322-.652l.9-1.56a1.875 1.875 0 0 0-.394-2.317l-1.5-1.3a8.16 8.16 0 0 0 0-2.482l1.5-1.3a1.875 1.875 0 0 0 .394-2.317l-.9-1.56a1.875 1.875 0 0 0-2.322-.652l-1.8.9a8.094 8.094 0 0 0-1.784-.94l-.178-2.073A1.875 1.875 0 0 0 12.922 2.25h-1.844ZM12 15.75a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z" clip-rule="evenodd"/>' + close;
+    }
+    if (name === 'dock') {
+      return open + '<path d="M5.25 4.5A2.25 2.25 0 0 0 3 6.75v10.5A2.25 2.25 0 0 0 5.25 19.5h13.5A2.25 2.25 0 0 0 21 17.25V6.75A2.25 2.25 0 0 0 18.75 4.5H5.25Zm9 1.5v12H18.75a.75.75 0 0 0 .75-.75V6.75a.75.75 0 0 0-.75-.75H14.25Z"/>' + close;
+    }
+    if (name === 'undock') {
+      return open + '<path d="M5.25 4.5A2.25 2.25 0 0 0 3 6.75v10.5A2.25 2.25 0 0 0 5.25 19.5h6a.75.75 0 0 0 0-1.5h-6a.75.75 0 0 1-.75-.75V6.75A.75.75 0 0 1 5.25 6h13.5a.75.75 0 0 1 .75.75v3a.75.75 0 0 0 1.5 0v-3A2.25 2.25 0 0 0 18.75 4.5H5.25Z"/><path d="M14.25 13.5a.75.75 0 0 1 .75-.75h4.19l-1.22-1.22a.75.75 0 1 1 1.06-1.06l2.5 2.5a.75.75 0 0 1 0 1.06l-2.5 2.5a.75.75 0 1 1-1.06-1.06l1.22-1.22H15a.75.75 0 0 1-.75-.75Z"/>' + close;
+    }
+    if (name === 'clear') {
+      return open + '<path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25Zm-1.72 6.97a.75.75 0 1 0-1.06 1.06L10.94 12l-1.72 1.72a.75.75 0 1 0 1.06 1.06L12 13.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L13.06 12l1.72-1.72a.75.75 0 1 0-1.06-1.06L12 10.94 10.28 9.22Z" clip-rule="evenodd"/>' + close;
+    }
+    return open + '<path d="M6.22 6.22a.75.75 0 0 1 1.06 0L12 10.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L13.06 12l4.72 4.72a.75.75 0 1 1-1.06 1.06L12 13.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L10.94 12 6.22 7.28a.75.75 0 0 1 0-1.06Z"/>' + close;
+  }
+
   function ensureFab() {
-    if (fab && fab.parentNode) return fab;
-    fab = document.createElement('button');
-    fab.id = 'vp-crank-fab';
-    fab.type = 'button';
-    fab.className = 'vp-crank-fab';
-    fab.setAttribute('aria-label', 'Crank — select copy to edit');
-    fab.innerHTML =
+    if (launcher && launcher.isConnected) return fab;
+    if (launcher) {
+      document.documentElement.appendChild(launcher);
+      fab = launcher.querySelector('#vp-crank-fab');
+      syncLauncher();
+      return fab;
+    }
+    launcher = document.createElement('div');
+    launcher.id = 'vp-crank-launcher';
+    launcher.innerHTML =
+      '<div class="vp-crank-bar" role="toolbar" aria-label="Crank">' +
+      '<div class="vp-crank-tools">' +
+      '<button type="button" class="vp-crank-tool vp-crank-tool--cap" data-crank-tool="select" data-tip="Select" aria-label="Select">' +
+      toolIcon('select') +
+      '</button>' +
+      '<button type="button" class="vp-crank-tool" data-crank-tool="history" data-tip="History" aria-label="History">' +
+      toolIcon('history') +
+      '</button>' +
+      '<button type="button" class="vp-crank-tool" data-crank-tool="settings" data-tip="Settings" aria-label="Settings">' +
+      toolIcon('settings') +
+      '</button>' +
+      '<span class="vp-crank-sep" aria-hidden="true"></span>' +
+      '<button type="button" class="vp-crank-tool" id="vp-crank-dock" data-crank-tool="dock" data-tip="Dock" aria-label="Dock">' +
+      toolIcon('dock') +
+      '</button>' +
+      '<button type="button" class="vp-crank-tool" data-crank-tool="clear" data-tip="Clear" aria-label="Clear">' +
+      toolIcon('clear') +
+      '</button>' +
+      '<button type="button" class="vp-crank-tool" data-crank-tool="close" data-tip="Close" aria-label="Close">' +
+      toolIcon('close') +
+      '</button>' +
+      '</div>' +
+      '<button type="button" id="vp-crank-fab" class="vp-crank-fab" aria-label="Open Crank">' +
       '<img src="' +
       getFabLogoUrl().replace(/"/g, '&quot;') +
-      '" alt="" draggable="false" width="36" height="36" />';
+      '" alt="" draggable="false" width="22" height="22" />' +
+      '</button>' +
+      '</div>';
+    fab = launcher.querySelector('#vp-crank-fab');
     fab.addEventListener('click', function (ev) {
       if (ev && ev.preventDefault) ev.preventDefault();
       if (ev && ev.stopPropagation) ev.stopPropagation();
-      if (uiMode === 'selecting' || uiMode === 'panel') return;
-      startSelectFromFab();
+      if (!toolbarOpen) expandToolbar();
     });
-    document.documentElement.appendChild(fab);
+    launcher.addEventListener('pointerover', function (ev) {
+      const btn = ev.target && ev.target.closest ? ev.target.closest('[data-tip]') : null;
+      if (!btn || !launcher.contains(btn)) return;
+      showCrankTooltip(btn);
+    });
+    launcher.addEventListener('pointerout', function (ev) {
+      const btn = ev.target && ev.target.closest ? ev.target.closest('[data-tip]') : null;
+      if (!btn || !launcher.contains(btn)) return;
+      const next = ev.relatedTarget;
+      if (next && btn.contains(next)) return;
+      hideCrankTooltip();
+    });
+    launcher.addEventListener('click', function (ev) {
+      hideCrankTooltip();
+      const btn = ev.target && ev.target.closest ? ev.target.closest('[data-crank-tool]') : null;
+      if (!btn || !launcher.contains(btn)) return;
+      if (ev.preventDefault) ev.preventDefault();
+      if (ev.stopPropagation) ev.stopPropagation();
+      const tool = btn.getAttribute('data-crank-tool');
+      if (tool === 'dock') {
+        togglePanelDock();
+        return;
+      }
+      activateTool(tool);
+    });
+    document.documentElement.appendChild(launcher);
+    syncChromeIcons();
+    syncLauncher();
     return fab;
+  }
+
+  function syncLauncher() {
+    if (!launcher) return;
+    const inPanel = toolbarLivesInDock();
+    if (inPanel) toolbarOpen = true;
+    launcher.classList.toggle('is-expanded', !!toolbarOpen);
+    launcher.querySelectorAll('[data-crank-tool]').forEach(function (btn) {
+      const name = btn.getAttribute('data-crank-tool');
+      const on = !!toolbarOpen && (name === 'select' || name === 'history' || name === 'settings') && name === activeTool;
+      btn.classList.toggle('is-active', on);
+      if (name === 'select' || name === 'history' || name === 'settings') {
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      }
+    });
+    parkLauncher();
+    positionLauncher();
+  }
+
+  function toolbarLivesInDock() {
+    return !!(panel && panel.parentNode && readPanelDocked() && panel.querySelector('#vc-chrome-footer'));
+  }
+
+  function parkLauncher() {
+    if (!launcher) return;
+    const footer = toolbarLivesInDock() ? panel.querySelector('#vc-chrome-footer') : null;
+    if (footer) {
+      if (launcher.parentNode !== footer) footer.appendChild(launcher);
+      launcher.classList.add('is-in-panel');
+      launcher.classList.add('is-expanded');
+      toolbarOpen = true;
+      return;
+    }
+    if (launcher.parentNode !== document.documentElement) {
+      document.documentElement.appendChild(launcher);
+    }
+    launcher.classList.remove('is-in-panel');
+  }
+
+  function positionLauncher() {
+    if (!launcher) return;
+    launcher.style.left = '';
+    launcher.style.transform = '';
+    if (launcher.classList.contains('is-in-panel')) {
+      launcher.style.right = '';
+      launcher.style.bottom = '';
+    } else {
+      const floatingPanel = !!(panel && panel.parentNode && !readPanelDocked());
+      launcher.style.right = floatingPanel ? 'calc(' + PANEL_DOCK_WIDTH + ' + 20px)' : '20px';
+      launcher.style.bottom = '20px';
+    }
+    if (selectHint && selectHint.style.display !== 'none') {
+      if (panel && panel.parentNode) {
+        selectHint.style.right = 'calc(' + PANEL_DOCK_WIDTH + ' + 16px)';
+        selectHint.style.bottom = '20px';
+      } else {
+        selectHint.style.right = '20px';
+        selectHint.style.bottom = '72px';
+      }
+    }
   }
 
   function showFab() {
     ensureFab();
-    if (fab) fab.style.display = '';
+    if (launcher) launcher.hidden = false;
+    syncLauncher();
   }
 
   function hideFab() {
-    if (fab) fab.style.display = 'none';
+    if (launcher) launcher.hidden = true;
   }
 
   function setFabActive(active) {
     if (!fab) return;
     fab.classList.toggle('vp-crank-fab--active', !!active);
+  }
+
+  function expandToolbar() {
+    ensureFab();
+    toolbarOpen = true;
+    activeTool = 'select';
+    syncLauncher();
+    armSelection();
+  }
+
+  function clearSelection() {
+    restoreOriginal();
+    resetSessionState();
+    if (panel) {
+      setGleanFieldValue('#vc-glean-strings', '');
+      GLEAN_FREE_TEXT_SELECTORS.forEach(function (selector) {
+        setGleanFieldValue(selector, '');
+      });
+      gleanContextTouched = false;
+      gleanValidationRequested = false;
+      resetOptionalGleanFieldsUi();
+      renderLayerList();
+      if (panel.parentNode) {
+        setPanelSurface('crank');
+        setPanelStep('ask');
+      }
+      updateGleanContextValidationUI();
+      syncGleanButton();
+    }
+    activeTool = 'select';
+    if (toolbarOpen) armSelection();
+    else syncLauncher();
+    setStatus('Selection cleared');
+  }
+
+  function collapseToolbar() {
+    toolbarOpen = false;
+    activeTool = 'select';
+    stopSelect();
+    hideSelectHint();
+    if (panel && panel.parentNode) {
+      panel.removeAttribute('data-crank-view');
+    }
+    closePanel();
+    syncLauncher();
+  }
+
+  function activateTool(tool) {
+    if (tool === 'close') {
+      collapseToolbar();
+      return;
+    }
+    if (tool === 'clear') {
+      clearSelection();
+      return;
+    }
+    toolbarOpen = true;
+    activeTool = tool || 'select';
+    if (activeTool === 'select') {
+      if (panel) panel.setAttribute('data-crank-view', 'copy');
+      armSelection();
+      syncLauncher();
+      return;
+    }
+    stopSelect();
+    hideSelectHint();
+    ensurePanelMounted();
+    uiMode = 'panel';
+    panel.setAttribute('data-crank-view', activeTool);
+    positionLauncher();
+    if (activeTool === 'history') loadHistoryList();
+    if (activeTool === 'settings') syncSettingsControls();
+    syncLauncher();
+  }
+
+  function armSelection() {
+    if (selecting) return;
+    uiMode = 'selecting';
+    showSelectHint('Click a layout on the page · Esc to cancel');
+    startSelect();
   }
 
   function showSelectHint(text) {
@@ -746,27 +2067,27 @@
     if (selectHint) selectHint.style.display = 'none';
   }
 
-  function startSelectFromFab() {
-    if (selecting || uiMode === 'panel') return;
-    uiMode = 'selecting';
-    setFabActive(true);
-    showSelectHint('Click a layout on the page · Esc to cancel');
-    startSelect();
-  }
-
   function cancelSelectionMode() {
     stopSelect();
-    uiMode = 'fab';
-    setFabActive(false);
     hideSelectHint();
+    if (!toolbarOpen) uiMode = 'fab';
+    else if (!(panel && panel.parentNode)) uiMode = 'fab';
   }
 
   function ensurePanelMounted() {
-    if (!panel.querySelector('#vc-glean')) {
+    const built = !panel.querySelector('#vc-glean');
+    if (built) {
       buildPanelShell();
     }
+    const wasAttached = !!panel.parentNode;
     if (!panel.parentNode) {
       document.documentElement.appendChild(panel);
+    }
+    setPageScrollbarHidden(true);
+    applyPanelLayout();
+    syncLauncher();
+    if (built || !wasAttached) {
+      scheduleAutogrowSync(panel);
     }
   }
 
@@ -774,13 +2095,24 @@
     uiMode = 'panel';
     setFabActive(false);
     hideSelectHint();
-    hideFab();
     ensurePanelMounted();
+    panel.setAttribute('data-crank-view', 'copy');
+    panel.setAttribute('data-crank-has-selection', '1');
+    activeTool = 'select';
+    syncLauncher();
+    setPanelStep('ask');
+    setPanelSurface('crank');
+    applySelectionToGleanForm();
   }
 
   function resetSessionState() {
     selectedEl = null;
+    layerFocus = null;
+    checkedLayers = [];
+    layerCatalog = [];
     selectedNodes = [];
+    if (panel) panel.removeAttribute('data-crank-has-selection');
+    highlight.remove();
     sessionId = null;
     lastVariants = [];
     activeVariantId = null;
@@ -793,12 +2125,16 @@
     const glean = panel && panel.querySelector('#vc-glean');
     if (!glean) return;
     const online = window.__CRANK_COMPANION_ONLINE__ !== false;
-    glean.disabled = !sessionId || !online;
-    glean.title = !online
-      ? 'Companion offline — use Retry below or run: ' + companionStartCommand()
-      : sessionId
-        ? 'Ask Glean for rewritten copy alternatives'
-        : 'Select copy on the page first';
+    updateGleanContextValidationUI();
+    glean.disabled = !!gleanActiveEpoch;
+    if (!online) {
+      glean.title =
+        'Agent offline. Crank keeps checking, or use Diagnose with agent.';
+    } else if (!sessionId) {
+      glean.title = 'Select copy on the page first';
+    } else {
+      glean.title = 'Ask Glean for rewritten copy alternatives';
+    }
   }
 
   function applySessionFromServer(session) {
@@ -808,12 +2144,321 @@
     return true;
   }
 
+  function showFreshSelection() {
+    lastVariants = [];
+    activeVariantId = null;
+    previewedVariantId = null;
+    viewedRequestId = null;
+    const box = panel && panel.querySelector('#vc-variants');
+    if (box) {
+      box.innerHTML = '';
+      box.classList.add('crank-hidden');
+    }
+    hideThinking();
+    setPanelStep('ask');
+  }
+
+  function syncSettingsControls() {
+    if (!panel) return;
+    const theme = readPanelTheme();
+    const lightBtn = panel.querySelector('#vc-settings-light');
+    const darkBtn = panel.querySelector('#vc-settings-dark');
+    if (lightBtn) lightBtn.classList.toggle('is-active', theme !== 'dark');
+    if (darkBtn) darkBtn.classList.toggle('is-active', theme === 'dark');
+    const dockBtn = panel.querySelector('#vc-settings-dock');
+    if (dockBtn) {
+      dockBtn.textContent = readPanelDocked() ? 'Use floating panel' : 'Dock to the right';
+    }
+    const count = String(getGleanOptionCount());
+    setFieldSelectValue('vc-settings-option-count', count);
+    setFieldSelectValue('vc-option-count', count);
+    initDepthTune();
+  }
+
+  function normalizeCopy(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function visibleCopySet() {
+    const set = new Set();
+    if (!document.body) return set;
+    const all = document.body.querySelectorAll('*');
+    for (let i = 0; i < all.length; i += 1) {
+      const el = all[i];
+      if (isCrankChrome(el)) continue;
+      const text = normalizeCopy(el.textContent);
+      if (text.length >= 2 && text.length <= 2000) set.add(text);
+    }
+    return set;
+  }
+
+  function copiesAreVisible(copies, present) {
+    const list = (copies || []).map(normalizeCopy).filter(function (text) {
+      return text.length >= 2;
+    });
+    if (!list.length) return false;
+    return list.every(function (text) {
+      return present.has(text);
+    });
+  }
+
+  function refreshPagePresence() {
+    if (!panel) return;
+    const present = visibleCopySet();
+    const list = panel.querySelector('#vc-history-list');
+    if (list) {
+      list.querySelectorAll('[data-history-preview]').forEach(function (btn) {
+        const id = btn.getAttribute('data-history-preview');
+        btn.hidden = !copiesAreVisible(historyStringMap[id], present);
+      });
+    }
+    const box = panel.querySelector('#vc-variants');
+    if (box) {
+      box.querySelectorAll('[data-variant-preview]').forEach(function (btn) {
+        const id = btn.getAttribute('data-variant-preview');
+        const variant = (lastVariants || []).find(function (item) {
+          return item && item.id === id;
+        });
+        const copies =
+          variant && Array.isArray(variant.nodes)
+            ? variant.nodes.map(function (node) {
+                return node.originalText || node.previousText || '';
+              })
+            : [];
+        btn.hidden = !copiesAreVisible(copies, present);
+      });
+    }
+  }
+
+  function schedulePageSense() {
+    if (pageSenseTimer) clearTimeout(pageSenseTimer);
+    pageSenseTimer = setTimeout(refreshPagePresence, 400);
+  }
+
+  function startPageSensor() {
+    if (window.__crankPageSensor) return;
+    window.__crankPageSensor = true;
+    const observer = new MutationObserver(function (mutations) {
+      for (let i = 0; i < mutations.length; i += 1) {
+        const target = mutations[i].target;
+        const el = target && target.nodeType === 1 ? target : target && target.parentElement;
+        if (el && el.closest && el.closest('#vp-shell, #vp-crank-launcher')) continue;
+        schedulePageSense();
+        return;
+      }
+    });
+    if (document.body) {
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    }
+    window.addEventListener('focus', schedulePageSense);
+    window.addEventListener('pageshow', schedulePageSense);
+    window.addEventListener('popstate', schedulePageSense);
+  }
+
+  async function loadHistoryList() {
+    const list = panel && panel.querySelector('#vc-history-list');
+    if (!list) return;
+    list.innerHTML = '<p class="vc-tool-lead">Loading history…</p>';
+    try {
+      const resp = await fetch(COMPANION_HTTP + '/api/responses', {
+        cache: 'no-store',
+        headers: authHeaders()
+      });
+      const data = await resp.json();
+      const runs = data && Array.isArray(data.runs) ? data.runs : [];
+      if (!runs.length) {
+        list.innerHTML = '<p class="vc-tool-lead vc-history-empty">No agent searches yet.</p>';
+        return;
+      }
+      const escape = UI().escapeHtml || function (v) {
+        return String(v == null ? '' : v);
+      };
+      list.innerHTML = runs
+        .map(function (run) {
+          const when = run.createdAt ? new Date(run.createdAt).toLocaleString() : '';
+          const strings = Array.isArray(run.strings) ? run.strings.filter(Boolean) : [];
+          const lines = strings
+            .join('\n')
+            .split(/\n/)
+            .map(function (line) {
+              return line.trim();
+            })
+            .filter(Boolean);
+          const single = lines.length <= 1;
+          historyStringMap[run.id] = lines;
+          const preview = (single ? lines.slice(0, 1) : lines.slice(0, 2)).join('\n') || 'Untitled search';
+          const running = run.status === 'running';
+          const failed = run.status === 'error';
+          const silent = run.status === 'expired';
+          const meta = running ? 'Running' : failed ? 'Failed' : silent ? 'No response' : when;
+          const shots = run.shots || {};
+          const rawShot = shots.context || shots.tight || '';
+          const src = rawShot.indexOf('/shots/') === 0 ? COMPANION_HTTP + rawShot : rawShot;
+          const thumbs = src
+            ? '<img class="vc-history-shot" alt="" src="' + src + '" />'
+            : '';
+          return (
+            '<div role="button" tabindex="0" class="vc-history-card' +
+            (single ? ' is-single-line' : '') +
+            (running ? ' is-running' : '') +
+            (silent ? ' is-expired' : '') +
+            '" data-history-id="' +
+            escape(run.id) +
+            '" data-history-status="' +
+            escape(run.status || 'ready') +
+            '">' +
+            '<button type="button" class="vc-history-open" data-history-preview="' +
+            escape(run.id) +
+            '" hidden aria-label="Preview these strings on this page">' +
+            '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>' +
+            '</button>' +
+            '<button type="button" class="vc-history-delete" data-history-delete="' +
+            escape(run.id) +
+            '" aria-label="Delete">' +
+            '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M5.7 2.2h4.6l.45.9h2.55v1.3H2.7V3.1h2.55l.45-.9zM4 5.1h8l-.55 8.05a1 1 0 0 1-1 .85H5.55a1 1 0 0 1-1-.85L4 5.1z"/></svg>' +
+            '</button>' +
+            (thumbs ? '<span class="vc-history-shots">' + thumbs + '</span>' : '') +
+            '<span class="vc-history-preview">' +
+            escape(preview) +
+            '</span>' +
+            '<span class="vc-history-meta">' +
+            escape(meta) +
+            '</span></div>'
+          );
+        })
+        .join('');
+      refreshPagePresence();
+    } catch (err) {
+      list.innerHTML = '<p class="vc-tool-lead">History is unavailable. Start the companion and try again.</p>';
+    }
+  }
+
+  function showHistoryRequest(run) {
+    if (!run || !panel) return;
+    viewedRequestId = run.id;
+    activeTool = 'select';
+    stopSelect();
+    hideSelectHint();
+    panel.setAttribute('data-crank-view', 'copy');
+    setPanelSurface('crank');
+    syncLauncher();
+    if (run.status === 'error' || run.status === 'expired') {
+      renderVariants([]);
+      hideThinking();
+      setPanelStep('ask');
+      setStatus(run.status === 'expired' ? 'No response' : run.error || 'This request failed');
+      return;
+    }
+    if (run.status === 'running') {
+      renderVariants([]);
+      const live = liveRequests[run.id];
+      const started = live && live.startedAt ? live.startedAt : Date.parse(run.createdAt || '');
+      thinkingStartedAt = Number.isFinite(started) ? started : Date.now();
+      if (!thinkingUiTimer) startThinkingClock();
+      showThinking({
+        stage: 'stream_wait',
+        text: 'Waiting for a response…',
+        detail: 'This request is still in progress',
+        live: false
+      });
+      setPanelStep('thinking');
+      watchHistoryRequest(run.id);
+      return;
+    }
+    if (!Array.isArray(run.variants) || !run.variants.length) {
+      renderVariants([]);
+      hideThinking();
+      setPanelStep('ask');
+      setStatus('No response');
+      return;
+    }
+    hideThinking();
+    (run.variants || []).forEach(function (variant) {
+      if (variant) variant.pageUrl = run.pageUrl || '';
+    });
+    renderVariants(run.variants);
+    setPanelStep('results');
+    scheduleAutogrowSync(panel);
+  }
+
+  function watchHistoryRequest(id) {
+    if (!id || (liveRequests[id] && liveRequests[id].watch)) return;
+    const holder = liveRequests[id] || (liveRequests[id] = {});
+    holder.watch = setInterval(async function () {
+      try {
+        const resp = await fetch(COMPANION_HTTP + '/api/responses/' + encodeURIComponent(id), {
+          cache: 'no-store',
+          headers: authHeaders()
+        });
+        const data = await resp.json();
+        const run = data && data.run;
+        if (!run || run.status === 'running') return;
+        clearInterval(holder.watch);
+        holder.watch = null;
+        delete liveRequests[id];
+        if (panel && panel.getAttribute('data-crank-view') === 'history') loadHistoryList();
+        if (viewedRequestId === id) showHistoryRequest(run);
+      } catch (_) {}
+    }, 1500);
+  }
+
+  async function deleteHistoryRun(id) {
+    if (!id) return;
+    const live = liveRequests[id];
+    if (live && live.watch) {
+      clearInterval(live.watch);
+      live.watch = null;
+    }
+    delete liveRequests[id];
+    if (viewedRequestId === id) viewedRequestId = null;
+    try {
+      const resp = await fetch(COMPANION_HTTP + '/api/responses/' + encodeURIComponent(id), {
+        method: 'DELETE',
+        headers: authHeaders()
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) throw new Error((data && data.error) || 'Could not delete');
+      loadHistoryList();
+    } catch (err) {
+      setStatus(err.message || 'Could not delete');
+    }
+  }
+
+  async function openHistoryRun(id) {
+    if (!id) return;
+    try {
+      const resp = await fetch(COMPANION_HTTP + '/api/responses/' + encodeURIComponent(id), {
+        cache: 'no-store',
+        headers: authHeaders()
+      });
+      const data = await resp.json();
+      const run = data && data.run;
+      if (!run) return;
+      showHistoryRequest(run);
+    } catch (_) {}
+  }
+
+  async function openHistoryPreview(id) {
+    await openHistoryRun(id);
+    const variant = (lastVariants || []).find(function (item) {
+      return item && Array.isArray(item.nodes) && item.nodes.length;
+    });
+    if (variant) previewVariantOnSelection(variant.id);
+  }
+
   function closePanel() {
     stopSelect();
     hideSelectHint();
     restoreOriginal();
     resetSessionState();
+    applyDockedPageLayout(false);
+    stopCompanionAutoRetry();
+    if (launcher && panel.contains(launcher)) {
+      document.documentElement.appendChild(launcher);
+      launcher.classList.remove('is-in-panel');
+    }
     if (panel.parentNode) panel.remove();
+    setPageScrollbarHidden(false);
     uiMode = 'fab';
     showFab();
     setFabActive(false);
@@ -826,9 +2471,20 @@
 
   function setStatus(text) {
     const el = panel && panel.querySelector('#vc-status');
-    if (el) el.textContent = text;
-    if (selectHint && uiMode === 'selecting') {
-      selectHint.textContent = String(text || '');
+    const msg = String(text || '').trim();
+    const isError =
+      !!msg &&
+      /error|failed|offline|required|missing|invalid|cannot/i.test(msg) &&
+      !/returned \d+ options/i.test(msg);
+    const show = isError || /^Preview/.test(msg);
+    if (el) {
+      if (!show) {
+        el.textContent = '';
+        el.classList.add('crank-hidden');
+      } else {
+        el.textContent = msg;
+        el.classList.remove('crank-hidden');
+      }
     }
   }
 
@@ -844,24 +2500,21 @@
         panel.appendChild(toast);
       }
     }
-    const bg =
-      tone === 'error'
-        ? 'oklch(0.93 0.04 25)'
-        : tone === 'ok'
-          ? 'oklch(0.93 0.04 160)'
-          : 'oklch(0.95 0.03 180)';
-    const border =
-      tone === 'error'
-        ? 'oklch(0.55 0.14 25)'
-        : tone === 'ok'
-          ? 'oklch(0.45 0.1 160)'
-          : 'oklch(0.45 0.08 180)';
-    toast.style.cssText =
-      'display:block;margin:0 0 10px;padding:8px 10px;border:1px solid ' +
-      border +
-      ';border-radius:8px;background:' +
-      bg +
-      ';color:var(--foreground,#111);font:12px/1.45 ui-sans-serif,system-ui,sans-serif;';
+    const companionDown = /not running|offline|Failed to fetch|3344/i.test(String(text || ''));
+    if (tone === 'error' && companionDown) {
+      setAgentStatus('offline', 'Agent not running');
+      showCompanionOfflineUI();
+      toast.className = '';
+      toast.style.cssText = 'display:none;';
+      toast.textContent = '';
+      return;
+    }
+    if (tone === 'ok' && /companion connected|token saved/i.test(String(text || ''))) {
+      setAgentStatus('running', 'Agent running');
+      hideCompanionOfflineUI();
+    }
+    toast.className = tone === 'error' ? 'error' : tone === 'ok' ? 'ok' : 'success';
+    toast.style.cssText = 'display:block;';
     toast.textContent = text;
   }
 
@@ -1316,7 +2969,7 @@
   }
 
   function isInlineTag(tag) {
-    return /^(span|strong|b|em|i|u|small|mark|code|a|br|wbr|svg|path)$/i.test(tag);
+    return /^(span|strong|b|em|i|u|small|mark|code|br|wbr|svg|path)$/i.test(tag);
   }
 
   function isLeafTextWrapper(el) {
@@ -1337,7 +2990,7 @@
   function isCopyUnitRoot(el) {
     if (!(el instanceof Element)) return false;
     const tag = el.tagName.toLowerCase();
-    if (/^(h1|h2|h3|h4|h5|h6|button|label|li|p|figcaption|caption|td|th)$/.test(tag)) {
+    if (/^(h1|h2|h3|h4|h5|h6|button|label|li|p|figcaption|caption|td|th|dt|dd|legend|summary)$/.test(tag)) {
       return true;
     }
     if (tag === 'a' && el.childNodes.length) return true;
@@ -1396,6 +3049,14 @@
   }
 
   /** Pure runtime data — show in selection list, hide from Glean variants/copy. */
+  function isRuntimeOnlyNode(n) {
+    if (!n) return true;
+    const ts = n.textSource && n.textSource.type;
+    if (ts === 'static-label' || ts === 'mixed') return false;
+    if (n.copyLabel || n.label) return false;
+    return isDynamicOnlyNode(n);
+  }
+
   function isDynamicOnlyNode(n) {
     if (!n) return false;
     const ts = n.textSource && n.textSource.type;
@@ -1467,10 +3128,15 @@
     };
   }
 
-  function buildUnit(el, classify, pathIndex) {
-    const text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+  function buildUnit(el, classify, pathIndex, textOverride, kind) {
+    const text =
+      textOverride != null
+        ? String(textOverride).replace(/\s+/g, ' ').trim()
+        : String(el.textContent || '').replace(/\s+/g, ' ').trim();
     if (!text) return null;
-    const parts = analyzeUnitParts(el, classify);
+    const parts = kind
+      ? [{ text: text, type: 'static-label', editable: true }]
+      : analyzeUnitParts(el, classify);
     const source = summarizeUnitSource(parts, classify, el, text);
     const path = String(pathIndex);
     return {
@@ -1488,7 +3154,8 @@
         editable: source.editable,
         chips: source.chips
       },
-      editable: source.editable
+      editable: source.editable,
+      kind: kind || ''
     };
   }
 
@@ -1549,10 +3216,74 @@
     });
   }
 
+  function isSkippedCopyTag(el) {
+    return /^(script|style|noscript|template|svg|canvas|video|audio|iframe)$/i.test(
+      el.tagName || ''
+    );
+  }
+
+  function isShownCopyElement(el) {
+    if (!el || el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') {
+      return false;
+    }
+    const style = window.getComputedStyle(el);
+    return !!style && style.display !== 'none' && style.visibility !== 'hidden';
+  }
+
+  function isStructuralChild(el) {
+    if (!(el instanceof Element)) return false;
+    const tag = el.tagName.toLowerCase();
+    if (isInlineTag(tag) || /^(br|wbr)$/.test(tag)) return false;
+    return true;
+  }
+
+  function collectInlineText(el) {
+    let text = '';
+    Array.from(el.childNodes || []).forEach(function (node) {
+      if (node.nodeType === 3) text += node.nodeValue || '';
+      else if (
+        node.nodeType === 1 &&
+        isInlineTag(node.tagName) &&
+        !isCrankChrome(node)
+      ) {
+        text += node.textContent || '';
+      }
+    });
+    return text.replace(/\s+/g, ' ').trim();
+  }
+
+  function currentUnitText(el, node) {
+    if (!el || !node) return '';
+    if (node.kind === 'placeholder') return el.getAttribute('placeholder') || '';
+    if (node.kind === 'alt') return el.getAttribute('alt') || '';
+    if (node.kind === 'aria') return el.getAttribute('aria-label') || '';
+    if (node.kind === 'value') return el.value || '';
+    if (node.kind === 'inline') return collectInlineText(el);
+    return String(el.textContent || '');
+  }
+
+  function applyInlineRun(el, next) {
+    const nodes = [];
+    Array.from(el.childNodes || []).forEach(function (node) {
+      if (node.nodeType === 3 && String(node.nodeValue || '').trim()) nodes.push(node);
+      else if (node.nodeType === 1 && isInlineTag(node.tagName)) nodes.push(node);
+    });
+    if (!nodes.length) {
+      el.insertBefore(document.createTextNode(next), el.firstChild);
+      return;
+    }
+    const first = nodes[0];
+    if (first.nodeType === 3) first.nodeValue = next;
+    else first.textContent = next;
+    for (let i = 1; i < nodes.length; i++) {
+      if (nodes[i].nodeType === 3) nodes[i].nodeValue = '';
+      else nodes[i].textContent = '';
+    }
+  }
+
   /**
-   * Coalesce copy into meaningful units (id, optional role, text, selector).
-   * Do not split a sentence across text nodes — keep one field per block;
-   * chip dynamic/bound fragments inside the unit instead.
+   * One string per visible block, control, or inline run.
+   * Inline emphasis stays inside its sentence. Structural siblings are not dropped.
    */
   function extractTextNodes(root) {
     const classify = TS().classifyTextSource || function () {
@@ -1561,33 +3292,99 @@
     const units = [];
     const seen = new Set();
 
-    function pushUnit(el) {
-      if (!el || seen.has(el)) return;
-      const unit = buildUnit(el, classify, units.length);
+    function pushUnit(el, textOverride, kind) {
+      if (!el) return;
+      const key = (kind || 'text') + '|' + (cssPath(el) || el.tagName);
+      if (seen.has(key)) return;
+      const unit = buildUnit(el, classify, units.length, textOverride, kind);
       if (!unit) return;
-      seen.add(el);
+      seen.add(key);
       units.push(unit);
     }
 
     function walk(el) {
       if (!(el instanceof Element)) return;
-      if (isCrankChrome(el)) return;
-      if (isCopyUnitRoot(el)) {
-        pushUnit(el);
-        return; // do not split children into separate units
+      if (isCrankChrome(el) || isSkippedCopyTag(el) || !isShownCopyElement(el)) return;
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'textarea') {
+        const placeholder = el.getAttribute('placeholder');
+        const value = String(el.value || '');
+        if (placeholder && placeholder.trim()) pushUnit(el, placeholder.trim(), 'placeholder');
+        if (value.trim() && value.trim() !== String(placeholder || '').trim()) {
+          pushUnit(el, value.trim(), 'value');
+        }
+        return;
       }
-      Array.from(el.children).forEach(walk);
+      if (tag === 'select') {
+        const option = el.options && el.selectedIndex >= 0 ? el.options[el.selectedIndex] : null;
+        const label = option ? String(option.text || '').trim() : '';
+        if (label) pushUnit(el, label, 'value');
+        return;
+      }
+      if (tag === 'img') {
+        const alt = el.getAttribute('alt');
+        if (alt && alt.trim()) pushUnit(el, alt.trim(), 'alt');
+        return;
+      }
+      if (isCopyUnitRoot(el)) {
+        const nested = Array.from(el.children).filter(isStructuralChild);
+        if (!nested.length) {
+          pushUnit(el);
+          return;
+        }
+        const inlineText = collectInlineText(el);
+        if (inlineText) pushUnit(el, inlineText, 'inline');
+        nested.forEach(walk);
+        return;
+      }
+      const structural = Array.from(el.children).filter(isStructuralChild);
+      if (!structural.length) {
+        const text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text) pushUnit(el, text);
+        else {
+          const aria = el.getAttribute('aria-label');
+          if (aria && aria.trim()) pushUnit(el, aria.trim(), 'aria');
+        }
+        return;
+      }
+      const inlineText = collectInlineText(el);
+      if (inlineText) pushUnit(el, inlineText, 'inline');
+      structural.forEach(walk);
     }
 
     walk(root);
 
-    // Fallback: whole selection as one body if nothing matched
-    if (!units.length) {
+    if (!units.length && root instanceof Element) {
       const unit = buildUnit(root, classify, 0);
       if (unit) units.push(unit);
     }
 
-    return assignUnitLabels(mergeSiblingBodyUnits(units));
+    return assignUnitLabels(units);
+  }
+
+  function stringsFromCheckedLayers() {
+    const roots = checkedLayers.filter(function (el, index) {
+      if (!(el instanceof Element)) return false;
+      return !checkedLayers.some(function (other, otherIndex) {
+        return otherIndex !== index && other instanceof Element && other.contains(el);
+      });
+    });
+    const seen = new Set();
+    const units = [];
+    roots.forEach(function (root) {
+      extractTextNodes(root).forEach(function (unit) {
+        const text = String(unit.text || '').replace(/\s+/g, ' ').trim();
+        if (!text || seen.has(text)) return;
+        seen.add(text);
+        units.push(unit);
+      });
+    });
+    return assignUnitLabels(
+      units.map(function (unit, index) {
+        const path = String(index);
+        return Object.assign({}, unit, { path: path, id: 'copy-' + path });
+      })
+    );
   }
 
   function resolveUnitElement(root, node) {
@@ -1595,7 +3392,7 @@
     if (node.selector) {
       try {
         const found = document.querySelector(node.selector);
-        if (found && root.contains(found) && found !== root) return found;
+        if (found && (found === root || root.contains(found))) return found;
       } catch (_) {}
       // Absolute cssPath may include ancestors; try the leaf selector inside root.
       try {
@@ -1612,6 +3409,81 @@
       } catch (_) {}
     }
     return null;
+  }
+
+  function writeVisibleText(el, node, next) {
+    const tag = el.tagName ? el.tagName.toLowerCase() : '';
+    if (node.kind === 'placeholder') {
+      el.setAttribute('placeholder', next);
+      return;
+    }
+    if (node.kind === 'alt' || tag === 'img') {
+      el.setAttribute('alt', next);
+      return;
+    }
+    if (node.kind === 'aria') {
+      el.setAttribute('aria-label', next);
+      return;
+    }
+    if (node.kind === 'value' || tag === 'textarea' || (tag === 'input' && node.kind !== 'placeholder')) {
+      el.value = next;
+      return;
+    }
+    if (tag === 'select') {
+      const opt = el.options && el.selectedIndex >= 0 ? el.options[el.selectedIndex] : null;
+      if (opt) opt.text = next;
+      return;
+    }
+    if (!el.childElementCount) {
+      el.textContent = next;
+      return;
+    }
+    const textNodes = [];
+    Array.from(el.childNodes || []).forEach(function (child) {
+      if (child.nodeType === 3 && String(child.nodeValue || '').trim()) textNodes.push(child);
+      else if (
+        child.nodeType === 1 &&
+        /^(span|strong|b|em|i|u|small|mark|code|a|label)$/i.test(child.tagName) &&
+        !child.querySelector('svg')
+      ) {
+        textNodes.push(child);
+      }
+    });
+    if (!textNodes.length) {
+      el.insertBefore(document.createTextNode(next), el.firstChild);
+      return;
+    }
+    const first = textNodes[0];
+    if (first.nodeType === 3) first.nodeValue = next;
+    else first.textContent = next;
+    for (let i = 1; i < textNodes.length; i += 1) {
+      if (textNodes[i].nodeType === 3) textNodes[i].nodeValue = '';
+      else textNodes[i].textContent = '';
+    }
+  }
+
+  function elementMatchingOriginalText(node) {
+    const needle = String(node.originalText || node.previousText || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!needle || needle.length < 2) return null;
+    const root = document.body;
+    if (!root) return null;
+    let best = null;
+    let bestSize = Infinity;
+    const all = root.querySelectorAll('*');
+    for (let i = 0; i < all.length; i += 1) {
+      const el = all[i];
+      if (isCrankChrome(el)) continue;
+      const text = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (text !== needle) continue;
+      const size = el.getBoundingClientRect ? el.getBoundingClientRect().width * el.getBoundingClientRect().height : 0;
+      if (!best || size < bestSize) {
+        best = el;
+        bestSize = size;
+      }
+    }
+    return best;
   }
 
   function applyNodesToDom(root, nodes) {
@@ -1632,7 +3504,7 @@
       extractTextNodes(root).forEach(function (u) {
         try {
           const el = document.querySelector(u.selector);
-          if (el && root.contains(el) && el !== root) {
+          if (el && (el === root || root.contains(el))) {
             byPath.set(String(u.path), el);
           }
         } catch (_) {}
@@ -1647,16 +3519,17 @@
       if (!el && byPath && node.path != null) {
         el = byPath.get(String(node.path)) || null;
       }
+      if (!el) el = elementMatchingOriginalText(node);
       if (!el) continue;
       const next = String(node.text || '');
       if (
-        String(el.textContent || '')
+        currentUnitText(el, node)
           .replace(/\s+/g, ' ')
           .trim() === next.replace(/\s+/g, ' ').trim()
       ) {
         continue;
       }
-      el.textContent = next;
+      writeVisibleText(el, node, next);
       applied += 1;
     }
     return applied;
@@ -1676,10 +3549,7 @@
       window.__CRANK_COMPANION_ONLINE__ = companionOnline;
       try {
         const gleanBtn = panel && panel.querySelector('#vc-glean');
-        if (gleanBtn && !sessionId) {
-          // Keep disabled until selection+session; only gate when we know companion is down
-          if (!on) gleanBtn.disabled = true;
-        }
+        if (gleanBtn && !gleanActiveEpoch) gleanBtn.disabled = false;
       } catch (_) {}
     }
 
@@ -1704,9 +3574,20 @@
         const data = await resp.json().catch(function () {
           return {};
         });
+        if (resp.status === 401 && data && (data.code === 'TEAM_TOKEN_REQUIRED' || data.code === 'TEAM_TOKEN_INVALID')) {
+          setGleanEnabled(true);
+          hideCompanionOfflineUI();
+          setAgentStatus('running', 'Agent running — team token required');
+          if (!getTeamToken() || data.code === 'TEAM_TOKEN_INVALID') {
+            showTeamAuthUI(uiMode === 'panel' ? 'panel' : 'both');
+          }
+          syncGleanButton();
+          return true;
+        }
         if (resp.ok && data && data.ok !== false) {
           setGleanEnabled(true);
           hideCompanionOfflineUI();
+          setAgentStatus('running', 'Agent running');
           const wsOpen = socket && socket.readyState === 1;
           const authed = !!getTeamToken();
           if (uiMode === 'panel' && sessionId) {
@@ -1729,12 +3610,8 @@
       } catch (_) {}
       setGleanEnabled(false);
       showCompanionOfflineUI();
-      setStatus(
-        'Companion offline — Retry below, run: ' +
-          companionStartCommand() +
-          ', or ask Cursor: ' +
-          COMPANION_AGENT_PHRASE
-      );
+      setAgentStatus('offline', 'Agent not running');
+      setStatus('');
       syncGleanButton();
       return false;
     }
@@ -1764,9 +3641,12 @@
         }
         if (msg.type === 'SELECTION_ACK' && msg.session) {
           applySessionFromServer(msg.session);
+          showFreshSelection();
           setStatus('Selection ready — preview/edit or Ask Glean');
         }
         if (msg.type === 'VARIANTS_READY' && msg.session) {
+          if (viewedRequestId) return;
+          if (msg.session.id && sessionId && msg.session.id !== sessionId) return;
           sessionId = msg.session.id;
           gleanActiveEpoch = 0;
           hideThinking();
@@ -1775,11 +3655,13 @@
           syncGleanButton();
         }
         if (msg.type === 'GLEAN_PROGRESS') {
-          if (!gleanActiveEpoch) return;
-          if (msg.sessionId && sessionId && msg.sessionId !== sessionId) return;
+          const live = viewedRequestId && liveRequests[viewedRequestId];
+          if (!live) return;
+          if (msg.sessionId && live.sessionId && msg.sessionId !== live.sessionId) return;
           showThinking(msg.progress || {});
         }
         if (msg.type === 'GLEAN_ERROR') {
+          if (viewedRequestId) return;
           gleanActiveEpoch = 0;
           hideThinking();
           setStatus('Glean error: ' + (msg.error || 'unknown'));
@@ -1992,6 +3874,1034 @@
     return ['Static'];
   }
 
+  const PANEL_THEME_KEY = 'crank.panelTheme';
+  const PANEL_DOCK_KEY = 'crank.panelDock';
+  const DEPTH_TUNE_KEY = 'crank.controlDepthTune';
+  const DEPTH_TUNE_NUMERIC_KEYS = ['top', 'bottom', 'drop', 'hairline', 'button', 'focus'];
+  const DEPTH_TUNE_COLOR_KEYS = [
+    'edgeColor',
+    'highlightColor',
+    'borderColor',
+    'surfaceColor',
+    'focusColor'
+  ];
+  const DEPTH_TUNE_CSS_VAR = {
+    top: '--vp-depth-top',
+    bottom: '--vp-depth-bottom',
+    drop: '--vp-depth-drop',
+    hairline: '--vp-depth-hairline',
+    button: '--vp-depth-button',
+    focus: '--vp-depth-focus',
+    edgeColor: '--vp-depth-edge-color',
+    highlightColor: '--vp-depth-highlight-color',
+    borderColor: '--vp-depth-border-color',
+    surfaceColor: '--vp-depth-surface-color',
+    focusColor: '--vp-depth-focus-color'
+  };
+  let depthTuneCssDefaults = null;
+  const CONTROL_EFFECTS_KEY = 'crank.controlEffects';
+  const FX_LAYER_COUNT = 4;
+  const DEFAULT_CONTROL_EFFECTS = {
+    radius: 12.6957,
+    borderWidth: 1,
+    backgroundColor: '#ffffff',
+    borderColor: '#bebebe',
+    borderOpacity: 8,
+    focusColor: '#639ee0',
+    focusOpacity: 100,
+    layers: [
+      {
+        enabled: true,
+        kind: 'inner',
+        x: 0,
+        y: 1,
+        blur: 4.5,
+        spread: -2,
+        color: '#ffffff',
+        opacity: 40
+      },
+      {
+        enabled: true,
+        kind: 'inner',
+        x: 0,
+        y: -2,
+        blur: 6.5,
+        spread: -3,
+        color: '#000000',
+        opacity: 9
+      },
+      {
+        enabled: true,
+        kind: 'drop',
+        x: 0,
+        y: 2,
+        blur: 4,
+        spread: -1,
+        color: '#000000',
+        opacity: 7
+      },
+      {
+        enabled: false,
+        kind: 'inner',
+        x: 0,
+        y: 0,
+        blur: 4.5,
+        spread: -2,
+        color: '#000000',
+        opacity: 6
+      }
+    ]
+  };
+  let controlEffectsCssDefaults = null;
+  const PANEL_DOCK_WIDTH = '380px';
+  let dockedPageStyle = null;
+
+  function readPanelDocked() {
+    try {
+      return localStorage.getItem(PANEL_DOCK_KEY) === '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function setPageScrollbarHidden(hidden) {
+    const html = document.documentElement;
+    if (!html) return;
+    if (hidden) html.setAttribute('data-crank-page-scroll', 'hidden');
+    else html.removeAttribute('data-crank-page-scroll');
+  }
+
+  function applyDockedPageLayout(docked) {
+    const html = document.documentElement;
+    const body = document.body;
+    if (docked && panel && panel.parentNode) {
+      if (!dockedPageStyle || !dockedPageStyle.parentNode) {
+        const style = document.createElement('style');
+        style.id = 'crank-docked-page-layout-style';
+        style.textContent = [
+          ':root{--crank-dock-width:' + PANEL_DOCK_WIDTH + ' !important;}',
+          'html{margin-right:var(--crank-dock-width) !important;overflow-x:hidden !important;}',
+          'body{overflow-x:hidden !important;position:relative !important;transform:translateZ(0) !important;}'
+        ].join('');
+        (document.head || html).appendChild(style);
+        dockedPageStyle = style;
+      }
+      if (html) html.style.setProperty('margin-right', PANEL_DOCK_WIDTH, 'important');
+      if (body) body.style.removeProperty('margin-right');
+      return;
+    }
+    if (dockedPageStyle && dockedPageStyle.parentNode) {
+      dockedPageStyle.parentNode.removeChild(dockedPageStyle);
+    }
+    dockedPageStyle = null;
+    if (html) html.style.removeProperty('margin-right');
+    if (body) body.style.removeProperty('margin-right');
+  }
+
+  function applyPanelLayout() {
+    if (!panel) return;
+    const docked = readPanelDocked();
+    if (docked) {
+      panel.setAttribute('data-crank-dock', '1');
+      panel.style.top = '0';
+      panel.style.right = '0';
+      panel.style.bottom = '0';
+      panel.style.left = 'auto';
+      panel.style.width = PANEL_DOCK_WIDTH;
+      panel.style.height = '100vh';
+      panel.style.maxHeight = '100vh';
+      panel.style.borderRadius = '0';
+    } else {
+      panel.removeAttribute('data-crank-dock');
+      panel.style.top = '16px';
+      panel.style.right = '16px';
+      panel.style.bottom = 'auto';
+      panel.style.left = 'auto';
+      panel.style.width = PANEL_DOCK_WIDTH;
+      panel.style.height = 'calc(100vh - 32px)';
+      panel.style.maxHeight = 'calc(100vh - 32px)';
+      panel.style.borderRadius = '';
+    }
+    applyDockedPageLayout(docked);
+    syncLauncher();
+  }
+
+  let crankTooltip = null;
+
+  function ensureCrankTooltip() {
+    if (crankTooltip && crankTooltip.isConnected) return crankTooltip;
+    crankTooltip = document.createElement('div');
+    crankTooltip.id = 'vp-crank-tooltip';
+    crankTooltip.setAttribute('role', 'tooltip');
+    crankTooltip.hidden = true;
+    document.documentElement.appendChild(crankTooltip);
+    return crankTooltip;
+  }
+
+  function showCrankTooltip(btn) {
+    const text = btn.getAttribute('data-tip');
+    if (!text) return;
+    const tip = ensureCrankTooltip();
+    tip.textContent = text;
+    tip.hidden = false;
+    const rect = btn.getBoundingClientRect();
+    tip.style.left = rect.left + rect.width / 2 + 'px';
+    tip.style.top = rect.top - 6 + 'px';
+  }
+
+  function hideCrankTooltip() {
+    if (crankTooltip) crankTooltip.hidden = true;
+  }
+
+  function syncDockIcon() {
+    const dockBtn = launcher && launcher.querySelector('#vp-crank-dock');
+    if (!dockBtn) return;
+    const docked = readPanelDocked();
+    const label = docked ? 'Float' : 'Dock';
+    dockBtn.innerHTML = toolIcon(docked ? 'undock' : 'dock');
+    dockBtn.setAttribute('data-tip', label);
+    dockBtn.setAttribute('aria-label', label);
+    dockBtn.classList.remove('is-active');
+  }
+
+  function syncChromeIcons() {
+    syncDockIcon();
+  }
+
+  function togglePanelDock() {
+    const next = !readPanelDocked();
+    try {
+      localStorage.setItem(PANEL_DOCK_KEY, next ? '1' : '0');
+    } catch (_) {}
+    applyPanelLayout();
+  }
+
+  function themeModeIcon(theme) {
+    if (theme === 'dark') {
+      return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+    }
+    return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 7 7 0 1 0 20 14.5z"/></svg>';
+  }
+
+  function readPanelTheme() {
+    try {
+      return localStorage.getItem(PANEL_THEME_KEY) === 'dark' ? 'dark' : 'light';
+    } catch (_) {
+      return 'light';
+    }
+  }
+
+  function applyPanelTheme(theme) {
+    const next = theme === 'dark' ? 'dark' : 'light';
+    if (panel) {
+      if (next === 'dark') panel.setAttribute('data-theme', 'dark');
+      else panel.removeAttribute('data-theme');
+    }
+    try {
+      localStorage.setItem(PANEL_THEME_KEY, next);
+    } catch (_) {}
+    syncChromeIcons();
+  }
+
+  function clampDepth(value, fallback) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(1, Math.max(0, n));
+  }
+
+  function normalizeHexColor(value, fallback) {
+    const s = String(value == null ? '' : value).trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(s)) return s.toLowerCase();
+    if (/^#[0-9a-fA-F]{3}$/.test(s)) {
+      return (
+        '#' +
+        s[1] +
+        s[1] +
+        s[2] +
+        s[2] +
+        s[3] +
+        s[3]
+      ).toLowerCase();
+    }
+    return fallback;
+  }
+
+  function cssColorToHex(value, fallback) {
+    const direct = normalizeHexColor(value, '');
+    if (direct) return direct;
+    if (!panel) return fallback;
+    try {
+      const probe = document.createElement('span');
+      probe.style.color = String(value || '').trim();
+      panel.appendChild(probe);
+      const rgb = getComputedStyle(probe).color;
+      panel.removeChild(probe);
+      const m = rgb.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+      if (!m) return fallback;
+      const hex = function (n) {
+        const h = Number(n).toString(16);
+        return h.length === 1 ? '0' + h : h;
+      };
+      return ('#' + hex(m[1]) + hex(m[2]) + hex(m[3])).toLowerCase();
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function captureDepthTuneCssDefaults() {
+    if (!panel) return null;
+    if (depthTuneCssDefaults) return depthTuneCssDefaults;
+    clearDepthTuneInline();
+    const cs = getComputedStyle(panel);
+    const out = {};
+    DEPTH_TUNE_NUMERIC_KEYS.forEach(function (key) {
+      const raw = cs.getPropertyValue(DEPTH_TUNE_CSS_VAR[key]).trim();
+      const n = parseFloat(raw);
+      out[key] = clampDepth(Number.isFinite(n) ? n : 0, 0);
+    });
+    const surfaceFallback = cssColorToHex(cs.getPropertyValue('--background').trim(), '#ffffff');
+    DEPTH_TUNE_COLOR_KEYS.forEach(function (key) {
+      const raw = cs.getPropertyValue(DEPTH_TUNE_CSS_VAR[key]).trim();
+      out[key] = cssColorToHex(raw, surfaceFallback);
+    });
+    depthTuneCssDefaults = out;
+    return out;
+  }
+
+  function defaultDepthTune() {
+    return Object.assign({}, captureDepthTuneCssDefaults() || {});
+  }
+
+  function hasStoredDepthTune() {
+    try {
+      if (localStorage.getItem(DEPTH_TUNE_KEY)) return true;
+      const legacy = localStorage.getItem('crank.controlDepth');
+      return legacy != null && legacy !== '';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function clearDepthTuneInline() {
+    if (!panel) return;
+    DEPTH_TUNE_NUMERIC_KEYS.concat(DEPTH_TUNE_COLOR_KEYS).forEach(function (key) {
+      panel.style.removeProperty(DEPTH_TUNE_CSS_VAR[key]);
+    });
+  }
+
+  function readDepthTune() {
+    const tune = defaultDepthTune();
+    try {
+      const raw = localStorage.getItem(DEPTH_TUNE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          DEPTH_TUNE_NUMERIC_KEYS.concat(DEPTH_TUNE_COLOR_KEYS).forEach(function (key) {
+            if (parsed[key] == null) return;
+            if (DEPTH_TUNE_COLOR_KEYS.indexOf(key) !== -1) {
+              tune[key] = normalizeHexColor(parsed[key], tune[key]);
+            } else {
+              tune[key] = clampDepth(parsed[key], tune[key]);
+            }
+          });
+        }
+      } else {
+        const legacy = localStorage.getItem('crank.controlDepth');
+        if (legacy != null && legacy !== '') {
+          const n = clampDepth(legacy, tune.top);
+          tune.top = n;
+          tune.bottom = n;
+          tune.drop = n;
+          tune.hairline = n;
+          tune.button = n;
+        }
+      }
+    } catch (_) {}
+    return tune;
+  }
+
+  function persistDepthTune(tune) {
+    try {
+      localStorage.setItem(DEPTH_TUNE_KEY, JSON.stringify(tune));
+    } catch (_) {}
+  }
+
+  function cloneControlEffects(effects) {
+    const base = effects || DEFAULT_CONTROL_EFFECTS;
+  return {
+    radius: Number(base.radius),
+    borderWidth: Number(base.borderWidth),
+    backgroundColor: base.backgroundColor,
+    borderColor: base.borderColor,
+    borderOpacity: Number(base.borderOpacity),
+    focusColor: base.focusColor,
+    focusOpacity: Number(base.focusOpacity),
+    layers: (base.layers || []).map(function (layer) {
+      return Object.assign({}, layer);
+    })
+  };
+}
+
+  function normalizeControlEffects(effects) {
+    const next = cloneControlEffects(DEFAULT_CONTROL_EFFECTS);
+    const src = effects || {};
+    next.radius = clampDepth(Number(src.radius) / 24, next.radius / 24) * 24;
+    if (!Number.isFinite(next.radius) || next.radius <= 0) next.radius = DEFAULT_CONTROL_EFFECTS.radius;
+    next.borderWidth = Math.min(4, Math.max(0, Number(src.borderWidth)));
+    if (!Number.isFinite(next.borderWidth)) next.borderWidth = DEFAULT_CONTROL_EFFECTS.borderWidth;
+    next.backgroundColor = normalizeHexColor(src.backgroundColor, next.backgroundColor);
+    next.borderColor = normalizeHexColor(src.borderColor, next.borderColor);
+    next.focusColor = normalizeHexColor(src.focusColor, next.focusColor);
+    next.borderOpacity = Math.min(100, Math.max(0, Math.round(Number(src.borderOpacity))));
+    if (!Number.isFinite(next.borderOpacity)) next.borderOpacity = DEFAULT_CONTROL_EFFECTS.borderOpacity;
+    next.focusOpacity = Math.min(100, Math.max(0, Math.round(Number(src.focusOpacity))));
+    if (!Number.isFinite(next.focusOpacity)) next.focusOpacity = DEFAULT_CONTROL_EFFECTS.focusOpacity;
+    const layers = Array.isArray(src.layers) ? src.layers : [];
+    for (let i = 0; i < FX_LAYER_COUNT; i += 1) {
+      const layer = layers[i] || DEFAULT_CONTROL_EFFECTS.layers[i] || DEFAULT_CONTROL_EFFECTS.layers[0];
+      const kind = layer.kind === 'inner' ? 'inner' : 'drop';
+      next.layers[i] = {
+        enabled: !!layer.enabled,
+        kind: kind,
+        x: Number(layer.x) || 0,
+        y: Number(layer.y) || 0,
+        blur: Math.max(0, Number(layer.blur) || 0),
+        spread: Number(layer.spread) || 0,
+        color: normalizeHexColor(layer.color, '#000000'),
+        opacity: Math.min(100, Math.max(0, Math.round(Number(layer.opacity))))
+      };
+      if (!Number.isFinite(next.layers[i].opacity)) next.layers[i].opacity = 0;
+    }
+    return next;
+  }
+
+  function hasStoredControlEffects() {
+    try {
+      return !!localStorage.getItem(CONTROL_EFFECTS_KEY);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function readControlEffects() {
+    const tune = normalizeControlEffects(DEFAULT_CONTROL_EFFECTS);
+    try {
+      const raw = localStorage.getItem(CONTROL_EFFECTS_KEY);
+      if (!raw) return tune;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return normalizeControlEffects(parsed);
+    } catch (_) {}
+    return tune;
+  }
+
+  function persistControlEffects(effects) {
+    try {
+      localStorage.setItem(CONTROL_EFFECTS_KEY, JSON.stringify(normalizeControlEffects(effects)));
+    } catch (_) {}
+  }
+
+  function hexToRgbParts(hex) {
+    const value = normalizeHexColor(hex, '#000000');
+    return {
+      r: parseInt(value.slice(1, 3), 16),
+      g: parseInt(value.slice(3, 5), 16),
+      b: parseInt(value.slice(5, 7), 16)
+    };
+  }
+
+  function composeFxShadowFromLayers(layers) {
+    const parts = [];
+    (layers || []).forEach(function (layer) {
+      if (!layer || !layer.enabled) return;
+      const rgb = hexToRgbParts(layer.color);
+      const alpha = Math.min(1, Math.max(0, Number(layer.opacity) / 100));
+      const inset = layer.kind === 'inner' ? 'inset ' : '';
+      parts.push(
+        inset +
+          layer.x +
+          'px ' +
+          layer.y +
+          'px ' +
+          layer.blur +
+          'px ' +
+          layer.spread +
+          'px rgb(' +
+          rgb.r +
+          ' ' +
+          rgb.g +
+          ' ' +
+          rgb.b +
+          ' / ' +
+          alpha +
+          ')'
+      );
+    });
+    return parts.join(', ');
+  }
+
+  function clearControlEffectsInline() {
+    if (!panel) return;
+    const names = [
+      '--vp-fx-field-shadow',
+      '--vp-fx-field-shadow-hover',
+      '--vp-fx-secondary-shadow',
+      '--vp-fx-secondary-shadow-hover',
+      '--vp-fx-control-border-width'
+    ];
+    names.forEach(function (name) {
+      panel.style.removeProperty(name);
+    });
+  }
+
+  function applyControlEffectsVars(effects) {
+    const next = normalizeControlEffects(effects);
+    if (!panel) return next;
+    const fieldShadow = composeFxShadowFromLayers(next.layers);
+    const elev =
+      '0 1px 1px 0 color-mix(in srgb, #11141c 5.5%, transparent)';
+    const secondary = fieldShadow ? fieldShadow + ', ' + elev : '';
+    if (fieldShadow) {
+      panel.style.setProperty('--vp-fx-field-shadow', fieldShadow);
+      panel.style.setProperty('--vp-fx-field-shadow-hover', fieldShadow);
+      panel.style.setProperty('--vp-fx-secondary-shadow', secondary);
+      panel.style.setProperty('--vp-fx-secondary-shadow-hover', secondary);
+    } else {
+      panel.style.removeProperty('--vp-fx-field-shadow');
+      panel.style.removeProperty('--vp-fx-field-shadow-hover');
+      panel.style.removeProperty('--vp-fx-secondary-shadow');
+      panel.style.removeProperty('--vp-fx-secondary-shadow-hover');
+    }
+    panel.style.setProperty('--vp-control-shell-radius', String(next.radius) + 'px');
+    panel.style.setProperty('--vp-fx-control-border-width', String(next.borderWidth) + 'px');
+    panel.style.setProperty('--vp-depth-surface-color', next.backgroundColor);
+    panel.style.setProperty('--vp-input-surface-gradient', next.backgroundColor);
+    panel.style.setProperty('--vp-input-surface-gradient-hover', next.backgroundColor);
+    panel.style.setProperty('--vp-input-surface-gradient-focus', next.backgroundColor);
+    const borderStroke =
+      'color-mix(in srgb, ' +
+      next.borderColor +
+      ' ' +
+      next.borderOpacity +
+      '%, transparent)';
+    panel.style.setProperty('--vp-button-secondary-face-stroke', borderStroke);
+    panel.style.setProperty('--vp-depth-border-color', next.borderColor);
+    panel.style.setProperty('--vp-depth-focus-color', next.focusColor);
+    panel.style.setProperty('--vp-depth-focus', String(next.focusOpacity / 100));
+    return next;
+  }
+
+  function fxNumInput(id, value, step) {
+    return (
+      '<input type="number" id="' +
+      id +
+      '" step="' +
+      step +
+      '" value="' +
+      value +
+      '" inputmode="decimal" />'
+    );
+  }
+
+  function buildFxShadowRow(index, layer) {
+    const title = layer.kind === 'inner' ? 'Inner shadow' : 'Drop shadow';
+    return (
+      '<div class="vc-fx-shadow-row" data-fx-layer="' +
+      index +
+      '">' +
+      '<div class="vc-fx-shadow-head">' +
+      '<input type="checkbox" class="vc-fx-layer-enable" id="vc-fx-layer-' +
+      index +
+      '-on"' +
+      (layer.enabled ? ' checked' : '') +
+      ' />' +
+      '<label class="vc-fx-shadow-title vp-type-micro" for="vc-fx-layer-' +
+      index +
+      '-on">' +
+      title +
+      '</label>' +
+      '</div>' +
+      '<motion class="vc-fx-shadow-grid">' +
+      '<label>X' +
+      fxNumInput('vc-fx-layer-' + index + '-x', layer.x, '0.1') +
+      '</label>' +
+      '<label>Y' +
+      fxNumInput('vc-fx-layer-' + index + '-y', layer.y, '0.1') +
+      '</label>' +
+      '<label>Blur' +
+      fxNumInput('vc-fx-layer-' + index + '-blur', layer.blur, '0.1') +
+      '</label>' +
+      '<label>Spread' +
+      fxNumInput('vc-fx-layer-' + index + '-spread', layer.spread, '0.1') +
+      '</label>' +
+      '</motion>' +
+      '<div class="vc-fx-shadow-color">' +
+      '<input type="color" id="vc-fx-layer-' +
+      index +
+      '-color" value="' +
+      layer.color +
+      '" />' +
+      '<input type="text" class="vc-fx-hex" id="vc-fx-layer-' +
+      index +
+      '-hex" value="' +
+      layer.color +
+      '" spellcheck="false" />' +
+      '<span class="vc-fx-opacity-wrap">' +
+      '<input type="number" class="vc-fx-opacity" id="vc-fx-layer-' +
+      index +
+      '-opacity" min="0" max="100" step="1" value="' +
+      layer.opacity +
+      '" />' +
+      '<span>%</span></span>' +
+      '</div></div>'
+    );
+  }
+
+  function buildFxInspectorHtml(effects) {
+    const fx = normalizeControlEffects(effects || DEFAULT_CONTROL_EFFECTS);
+    const layersHtml = fx.layers
+      .map(function (layer, index) {
+        return buildFxShadowRow(index, layer);
+      })
+      .join('');
+    return (
+      '<div class="vc-settings-block vc-fx-inspector">' +
+      '<div class="vc-fx-section-head">' +
+      '<div class="vc-readout-label">Light controls</div>' +
+      '<span class="vc-fx-section-tag">Hex</span>' +
+      '</div>' +
+      '<p class="vp-muted vp-type-micro vc-fx-inspector-lead">Figma-style fills and shadow stacks for inputs, selects, and buttons.</p>' +
+      '<motion class="vc-fx-metrics">' +
+      '<div class="vc-fx-metric">' +
+      '<span class="vc-fx-metric-label vp-type-micro">Radius</span>' +
+      fxNumInput('vc-fx-radius', fx.radius, '0.0001') +
+      '</div>' +
+      '<div class="vc-fx-metric">' +
+      '<span class="vc-fx-metric-label vp-type-micro">Border</span>' +
+      fxNumInput('vc-fx-border-width', fx.borderWidth, '1') +
+      '</div>' +
+      '<span class="vc-fx-metric vc-fx-metric--static vp-type-micro">Inside</span>' +
+      '</motion>' +
+      '<div class="vc-fx-section">' +
+      '<motion class="vc-fx-section-head"><span class="vc-readout-label">Colors</span><span class="vc-fx-section-tag">Hex</span></div>' +
+      '<div class="vc-fx-color-row">' +
+      '<span class="vc-fx-color-label vp-type-micro">Background</span>' +
+      '<input type="color" id="vc-fx-bg-color" value="' +
+      fx.backgroundColor +
+      '" />' +
+      '<input type="text" class="vc-fx-hex" id="vc-fx-bg-hex" value="' +
+      fx.backgroundColor +
+      '" spellcheck="false" />' +
+      '<span class="vc-fx-opacity-wrap"><input type="number" class="vc-fx-opacity" id="vc-fx-bg-opacity" min="0" max="100" value="100" /><span>%</span></span>' +
+      '</div>' +
+      '<div class="vc-fx-color-row">' +
+      '<span class="vc-fx-color-label vp-type-micro">Border</span>' +
+      '<input type="color" id="vc-fx-border-color" value="' +
+      fx.borderColor +
+      '" />' +
+      '<input type="text" class="vc-fx-hex" id="vc-fx-border-hex" value="' +
+      fx.borderColor +
+      '" spellcheck="false" />' +
+      '<span class="vc-fx-opacity-wrap"><input type="number" class="vc-fx-opacity" id="vc-fx-border-opacity" min="0" max="100" value="' +
+      fx.borderOpacity +
+      '" /><span>%</span></span>' +
+      '</div>' +
+      '<div class="vc-fx-color-row">' +
+      '<span class="vc-fx-color-label vp-type-micro">Focus ring</span>' +
+      '<input type="color" id="vc-fx-focus-color" value="' +
+      fx.focusColor +
+      '" />' +
+      '<input type="text" class="vc-fx-hex" id="vc-fx-focus-hex" value="' +
+      fx.focusColor +
+      '" spellcheck="false" />' +
+      '<span class="vc-fx-opacity-wrap"><input type="number" class="vc-fx-opacity" id="vc-fx-focus-opacity" min="0" max="100" value="' +
+      fx.focusOpacity +
+      '" /><span>%</span></span>' +
+      '</div></motion>' +
+      '<div class="vc-fx-section">' +
+      '<div class="vc-fx-section-head"><span class="vc-readout-label">Shadows and blurs</span><span class="vc-fx-section-tag">Hex</span></div>' +
+      layersHtml +
+      '</div>' +
+      '<div class="vc-fx-inspector-actions">' +
+      '<button type="button" id="vc-settings-depth-reset" class="vp-button-secondary-surface vp-control-shell vc-button-surface-control vp-control-typography vc-settings-depth-reset">Reset to defaults</button>' +
+      '</div></div>'
+    );
+  }
+
+  function readControlEffectsFromDom() {
+    if (!panel) return normalizeControlEffects(DEFAULT_CONTROL_EFFECTS);
+    const effects = normalizeControlEffects(DEFAULT_CONTROL_EFFECTS);
+    const radius = panel.querySelector('#vc-fx-radius');
+    const borderWidth = panel.querySelector('#vc-fx-border-width');
+    if (radius) effects.radius = Number(radius.value);
+    if (borderWidth) effects.borderWidth = Number(borderWidth.value);
+    const bgColor = panel.querySelector('#vc-fx-bg-color');
+    const borderColor = panel.querySelector('#vc-fx-border-color');
+    const focusColor = panel.querySelector('#vc-fx-focus-color');
+    if (bgColor) effects.backgroundColor = normalizeHexColor(bgColor.value, effects.backgroundColor);
+    if (borderColor) effects.borderColor = normalizeHexColor(borderColor.value, effects.borderColor);
+    if (focusColor) effects.focusColor = normalizeHexColor(focusColor.value, effects.focusColor);
+    const borderOpacity = panel.querySelector('#vc-fx-border-opacity');
+    const focusOpacity = panel.querySelector('#vc-fx-focus-opacity');
+    if (borderOpacity) effects.borderOpacity = Number(borderOpacity.value);
+    if (focusOpacity) effects.focusOpacity = Number(focusOpacity.value);
+    for (let i = 0; i < FX_LAYER_COUNT; i += 1) {
+      const layer = effects.layers[i];
+      const enabled = panel.querySelector('#vc-fx-layer-' + i + '-on');
+      const x = panel.querySelector('#vc-fx-layer-' + i + '-x');
+      const y = panel.querySelector('#vc-fx-layer-' + i + '-y');
+      const blur = panel.querySelector('#vc-fx-layer-' + i + '-blur');
+      const spread = panel.querySelector('#vc-fx-layer-' + i + '-spread');
+      const color = panel.querySelector('#vc-fx-layer-' + i + '-color');
+      const opacity = panel.querySelector('#vc-fx-layer-' + i + '-opacity');
+      if (enabled) layer.enabled = enabled.checked;
+      if (x) layer.x = Number(x.value);
+      if (y) layer.y = Number(y.value);
+      if (blur) layer.blur = Number(blur.value);
+      if (spread) layer.spread = Number(spread.value);
+      if (color) layer.color = normalizeHexColor(color.value, layer.color);
+      if (opacity) layer.opacity = Number(opacity.value);
+      layer.kind = DEFAULT_CONTROL_EFFECTS.layers[i].kind;
+    }
+    return normalizeControlEffects(effects);
+  }
+
+  function syncFxHexFields(colorId, hexId) {
+    if (!panel) return;
+    const color = panel.querySelector(colorId);
+    const hex = panel.querySelector(hexId);
+    if (color && hex && document.activeElement !== hex) {
+      hex.value = normalizeHexColor(color.value, hex.value);
+    }
+  }
+
+  function syncFxInspectorControls(effects) {
+    const next = normalizeControlEffects(effects);
+    if (!panel) return next;
+    const radius = panel.querySelector('#vc-fx-radius');
+    const borderWidth = panel.querySelector('#vc-fx-border-width');
+    if (radius && document.activeElement !== radius) radius.value = String(next.radius);
+    if (borderWidth && document.activeElement !== borderWidth) {
+      borderWidth.value = String(next.borderWidth);
+    }
+    const bgColor = panel.querySelector('#vc-fx-bg-color');
+    const borderColor = panel.querySelector('#vc-fx-border-color');
+    const focusColor = panel.querySelector('#vc-fx-focus-color');
+    if (bgColor && document.activeElement !== bgColor) {
+      bgColor.value = cssColorToHex(next.backgroundColor, bgColor.value);
+    }
+    if (borderColor && document.activeElement !== borderColor) {
+      borderColor.value = cssColorToHex(next.borderColor, borderColor.value);
+    }
+    if (focusColor && document.activeElement !== focusColor) {
+      focusColor.value = cssColorToHex(next.focusColor, focusColor.value);
+    }
+    syncFxHexFields('#vc-fx-bg-color', '#vc-fx-bg-hex');
+    syncFxHexFields('#vc-fx-border-color', '#vc-fx-border-hex');
+    syncFxHexFields('#vc-fx-focus-color', '#vc-fx-focus-hex');
+    const borderOpacity = panel.querySelector('#vc-fx-border-opacity');
+    const focusOpacity = panel.querySelector('#vc-fx-focus-opacity');
+    if (borderOpacity && document.activeElement !== borderOpacity) {
+      borderOpacity.value = String(next.borderOpacity);
+    }
+    if (focusOpacity && document.activeElement !== focusOpacity) {
+      focusOpacity.value = String(next.focusOpacity);
+    }
+    for (let i = 0; i < FX_LAYER_COUNT; i += 1) {
+      const layer = next.layers[i];
+      const enabled = panel.querySelector('#vc-fx-layer-' + i + '-on');
+      const x = panel.querySelector('#vc-fx-layer-' + i + '-x');
+      const y = panel.querySelector('#vc-fx-layer-' + i + '-y');
+      const blur = panel.querySelector('#vc-fx-layer-' + i + '-blur');
+      const spread = panel.querySelector('#vc-fx-layer-' + i + '-spread');
+      const color = panel.querySelector('#vc-fx-layer-' + i + '-color');
+      const opacity = panel.querySelector('#vc-fx-layer-' + i + '-opacity');
+      if (enabled) enabled.checked = !!layer.enabled;
+      if (x && document.activeElement !== x) x.value = String(layer.x);
+      if (y && document.activeElement !== y) y.value = String(layer.y);
+      if (blur && document.activeElement !== blur) blur.value = String(layer.blur);
+      if (spread && document.activeElement !== spread) spread.value = String(layer.spread);
+      if (color && document.activeElement !== color) {
+        color.value = cssColorToHex(layer.color, color.value);
+      }
+      if (opacity && document.activeElement !== opacity) opacity.value = String(layer.opacity);
+      syncFxHexFields('#vc-fx-layer-' + i + '-color', '#vc-fx-layer-' + i + '-hex');
+    }
+    return next;
+  }
+
+  function applyControlEffects(effects, options) {
+    const opts = options || {};
+    const next = applyControlEffectsVars(effects);
+    syncFxInspectorControls(next);
+    if (opts.persist) persistControlEffects(next);
+    return next;
+  }
+
+  function initControlEffects() {
+    if (!panel) return;
+    const useFx = hasStoredControlEffects();
+    const effects = readControlEffects();
+    if (useFx) {
+      applyControlEffectsVars(effects);
+      syncFxInspectorControls(effects);
+      return;
+    }
+    clearControlEffectsInline();
+    syncFxInspectorControls(DEFAULT_CONTROL_EFFECTS);
+    if (hasStoredDepthTune()) {
+      initDepthTune();
+    } else {
+      clearDepthTuneInline();
+      initDepthTune();
+    }
+  }
+
+  function randomControlEffectsFromSeed(seedRaw) {
+    const trimmed = String(seedRaw == null ? '' : seedRaw).trim();
+    const seedNum = trimmed === '' ? Date.now() : parseInt(trimmed, 10);
+    const seed = Number.isFinite(seedNum) ? seedNum : Date.now();
+    const rng = depthTuneRng(seed);
+    const effects = normalizeControlEffects(DEFAULT_CONTROL_EFFECTS);
+    effects.radius = Math.round((10 + rng() * 8) * 10000) / 10000;
+    effects.borderWidth = Math.round(rng() * 2);
+    effects.backgroundColor = randomHexRgb(rng, 235, 255);
+    effects.borderColor = randomHexRgb(rng, 160, 220);
+    effects.borderOpacity = Math.round(4 + rng() * 20);
+    effects.focusColor = randomHexRgb(rng, 80, 200);
+    effects.focusOpacity = Math.round(70 + rng() * 30);
+    effects.layers = effects.layers.map(function (layer, index) {
+      const base = DEFAULT_CONTROL_EFFECTS.layers[index] || layer;
+      return {
+        enabled: rng() > 0.35,
+        kind: base.kind,
+        x: 0,
+        y: Math.round((rng() * 4 - 2) * 10) / 10,
+        blur: Math.round(rng() * 10 * 10) / 10,
+        spread: Math.round((rng() * 4 - 2) * 10) / 10,
+        color: '#000000',
+        opacity: Math.round(4 + rng() * 24)
+      };
+    });
+    if (trimmed === '') {
+      const randomInput = panel && panel.querySelector('#vc-settings-depth-random');
+      if (randomInput) randomInput.value = String(seed);
+    }
+    return effects;
+  }
+
+  function depthSliderRow(label, id) {
+    const valueId = id + '-value';
+    return (
+      '<label class="vc-settings-depth-row" for="' +
+      id +
+      '">' +
+      '<span class="vc-settings-depth-name vp-type-micro">' +
+      label +
+      '</span>' +
+      '<input type="range" id="' +
+      id +
+      '" min="0" max="100" step="5" value="45" aria-valuemin="0" aria-valuemax="100" />' +
+      '<span id="' +
+      valueId +
+      '" class="vp-type-micro vc-settings-depth-value">45%</span>' +
+      '</label>'
+    );
+  }
+
+  function depthColorRow(label, id) {
+    return (
+      '<label class="vc-settings-depth-row vc-settings-depth-row--color" for="' +
+      id +
+      '">' +
+      '<span class="vc-settings-depth-name vp-type-micro">' +
+      label +
+      '</span>' +
+      '<input type="color" id="' +
+      id +
+      '" value="#ffffff" />' +
+      '</label>'
+    );
+  }
+
+  function normalizeDepthTune(tune) {
+    const base = defaultDepthTune();
+    const next = Object.assign({}, base, tune || {});
+    DEPTH_TUNE_NUMERIC_KEYS.forEach(function (key) {
+      next[key] = clampDepth(next[key], base[key]);
+    });
+    DEPTH_TUNE_COLOR_KEYS.forEach(function (key) {
+      next[key] = normalizeHexColor(next[key], base[key]);
+    });
+    return next;
+  }
+
+  function applyDepthTuneVars(tune) {
+    const next = normalizeDepthTune(tune);
+    if (!panel) return next;
+    DEPTH_TUNE_NUMERIC_KEYS.forEach(function (key) {
+      panel.style.setProperty(DEPTH_TUNE_CSS_VAR[key], String(next[key]));
+    });
+    DEPTH_TUNE_COLOR_KEYS.forEach(function (key) {
+      panel.style.setProperty(DEPTH_TUNE_CSS_VAR[key], next[key]);
+    });
+    return next;
+  }
+
+  function syncDepthTuneControls(tune) {
+    const next = normalizeDepthTune(tune);
+    const sliders = {
+      top: '#vc-settings-depth-top',
+      bottom: '#vc-settings-depth-bottom',
+      drop: '#vc-settings-depth-drop',
+      hairline: '#vc-settings-depth-hairline',
+      button: '#vc-settings-depth-button',
+      focus: '#vc-settings-depth-focus'
+    };
+    Object.keys(sliders).forEach(function (key) {
+      const slider = panel && panel.querySelector(sliders[key]);
+      const label = panel && panel.querySelector(sliders[key] + '-value');
+      const pct = Math.round(next[key] * 100);
+      if (label) label.textContent = pct + '%';
+      if (slider && document.activeElement !== slider) slider.value = String(pct);
+    });
+    const colorInputs = {
+      edgeColor: '#vc-settings-depth-edge-color',
+      highlightColor: '#vc-settings-depth-highlight-color',
+      borderColor: '#vc-settings-depth-border-color',
+      surfaceColor: '#vc-settings-depth-surface-color',
+      focusColor: '#vc-settings-depth-focus-color'
+    };
+    Object.keys(colorInputs).forEach(function (key) {
+      const input = panel && panel.querySelector(colorInputs[key]);
+      if (input && document.activeElement !== input) {
+        input.value = cssColorToHex(next[key], input.value || '#ffffff');
+      }
+    });
+    return next;
+  }
+
+  function initDepthTune() {
+    if (!panel) return;
+    clearDepthTuneInline();
+    clearControlEffectsInline();
+  }
+
+  function applyDepthTune(tune, options) {
+    const opts = options || {};
+    const next = opts.vars === false ? normalizeDepthTune(tune) : applyDepthTuneVars(tune);
+    syncDepthTuneControls(next);
+    if (opts.persist) persistDepthTune(next);
+    return next;
+  }
+
+  function depthTuneRng(seed) {
+    let state = (Number(seed) >>> 0) || 1;
+    return function () {
+      state += 0x6d2b79f5;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function randomChannelByte(rng, min, max) {
+    return min + Math.floor(rng() * (max - min + 1));
+  }
+
+  function randomHexRgb(rng, min, max) {
+    const r = randomChannelByte(rng, min, max);
+    const g = randomChannelByte(rng, min, max);
+    const b = randomChannelByte(rng, min, max);
+    return (
+      '#' +
+      ('0' + r.toString(16)).slice(-2) +
+      ('0' + g.toString(16)).slice(-2) +
+      ('0' + b.toString(16)).slice(-2)
+    );
+  }
+
+  function randomDepthTuneFromSeed(seedRaw) {
+    const trimmed = String(seedRaw == null ? '' : seedRaw).trim();
+    const seedNum = trimmed === '' ? Date.now() : parseInt(trimmed, 10);
+    const seed = Number.isFinite(seedNum) ? seedNum : Date.now();
+    const rng = depthTuneRng(seed);
+    const tune = readDepthTune();
+    DEPTH_TUNE_NUMERIC_KEYS.forEach(function (key) {
+      tune[key] = Math.round(rng() * 20) / 20;
+    });
+    tune.edgeColor = randomHexRgb(rng, 10, 55);
+    tune.highlightColor = randomHexRgb(rng, 235, 255);
+    tune.borderColor = randomHexRgb(rng, 170, 230);
+    tune.surfaceColor = randomHexRgb(rng, 240, 255);
+    tune.focusColor = randomHexRgb(rng, 80, 220);
+    if (trimmed === '') {
+      try {
+        const randomInput = panel && panel.querySelector('#vc-settings-depth-random');
+        if (randomInput) randomInput.value = String(seed);
+      } catch (_) {}
+    }
+    return tune;
+  }
+
+  function bindDepthTuneSliders() {
+    if (!panel || panel.__crankDepthTuneInit) return;
+    panel.__crankDepthTuneInit = true;
+    const ids = ['top', 'bottom', 'drop', 'hairline', 'button', 'focus'];
+    ids.forEach(function (key) {
+      const slider = panel.querySelector('#vc-settings-depth-' + key);
+      if (!slider) return;
+      slider.addEventListener('input', function () {
+        const tune = readDepthTune();
+        tune[key] = clampDepth(Number(slider.value) / 100, tune[key]);
+        applyDepthTune(tune, { persist: true });
+      });
+    });
+    const depthColorInputIds = {
+      edgeColor: '#vc-settings-depth-edge-color',
+      highlightColor: '#vc-settings-depth-highlight-color',
+      borderColor: '#vc-settings-depth-border-color',
+      surfaceColor: '#vc-settings-depth-surface-color',
+      focusColor: '#vc-settings-depth-focus-color'
+    };
+    DEPTH_TUNE_COLOR_KEYS.forEach(function (key) {
+      const input = panel.querySelector(depthColorInputIds[key]);
+      if (!input) return;
+      input.addEventListener('input', function () {
+        const tune = readDepthTune();
+        tune[key] = normalizeHexColor(input.value, tune[key]);
+        applyDepthTune(tune, { persist: true });
+      });
+    });
+    const resetBtn = panel.querySelector('#vc-settings-depth-reset');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', function () {
+        try {
+          localStorage.removeItem(DEPTH_TUNE_KEY);
+          localStorage.removeItem('crank.controlDepth');
+        } catch (_) {}
+        clearDepthTuneInline();
+        const tune = defaultDepthTune();
+        syncDepthTuneControls(tune);
+        const randomInput = panel.querySelector('#vc-settings-depth-random');
+        if (randomInput) randomInput.value = '';
+      });
+    }
+    const randomInput = panel.querySelector('#vc-settings-depth-random');
+    if (randomInput) {
+      function rollRandomDepthTune() {
+        applyDepthTune(randomDepthTuneFromSeed(randomInput.value), { persist: true });
+      }
+      randomInput.addEventListener('change', rollRandomDepthTune);
+      randomInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          rollRandomDepthTune();
+        }
+      });
+    }
+  }
+
   function buildPanelShell() {
     const ui = UI();
     const escape = ui.escapeHtml || function (v) {
@@ -2003,113 +4913,177 @@
     const group = ui.vpButtonGroupHtml || function (html) {
       return '<div style="display:flex;gap:8px;flex-wrap:wrap;">' + html + '</div>';
     };
+    const field = ui.vpFieldHtml || function (label, control) {
+      return '<div>' + label + control + '</div>';
+    };
+    const select = ui.vpFieldSelectHtml || ui.vpSelectHtml || function () {
+      return '';
+    };
+    const input = ui.vpInputHtml || function (attrs) {
+      return '<input' + (attrs && attrs.id ? ' id="' + attrs.id + '"' : '') + ' />';
+    };
 
     panel.innerHTML =
-      '<div class="vp-panel-block" style="padding:var(--vp-panel-padding, 1rem);">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">' +
-      '<div style="display:flex;align-items:center;gap:8px;">' +
-      '<strong style="font-size:var(--vp-font-size-body,14px);font-weight:var(--vp-font-weight-title,600);">Crank</strong>' +
-      (getPanelChannel() === 'preview'
-        ? '<span class="vp-type-micro" style="padding:2px 8px;border-radius:999px;background:oklch(0.93 0.06 85);color:oklch(0.45 0.12 85);font-weight:620;">Preview</span>'
-        : '') +
+      '<div class="vp-panel-root">' +
+      '<div id="vc-agent-status" class="is-checking" role="status">Checking agent…</div>' +
+      '<div id="vc-surface-tabs" class="vc-surface-tabs" role="tablist">' +
+      '<button type="button" class="vc-surface-tab is-active" data-crank-surface="crank" role="tab" aria-selected="true">Crank</button>' +
+      '<button type="button" class="vc-surface-tab" data-crank-surface="layers" role="tab" aria-selected="false">Layers</button>' +
       '</div>' +
-      btn('ghost', '×', { id: 'vc-close' }, { icon: true, size: 'compact' }) +
+      '<div class="vp-panel-body" id="vp-body">' +
+      '<section id="vc-layers" class="vp-panel-block"></section>' +
+      '<div id="vc-step-nav" class="vp-panel-block vp-panel-block--plain">' +
+      btn('ghost', 'Back', { id: 'vc-back', type: 'button' }) +
       '</div>' +
-      '<p id="vc-status" class="vp-muted vp-type-support" style="margin:0 0 10px;">Loading UI…</p>' +
-      '<div id="vc-toast" style="display:none;"></div>' +
-      '<div id="vc-companion-offline" style="display:none;margin:0 0 10px;padding:10px;border:1px solid oklch(0.55 0.14 25);border-radius:8px;background:oklch(0.97 0.02 25);">' +
-      '<div class="vp-type-label" style="font-weight:620;margin-bottom:6px;color:oklch(0.45 0.14 25);">Companion offline</div>' +
-      '<p class="vp-muted vp-type-micro" style="margin:0 0 8px;line-height:1.45;">Ask Glean, Copy, and Agent need the Crank companion (<code>' +
-      escape(String(COMPANION_HTTP).replace(/^https?:\/\//, '')) +
-      '</code>). The browser cannot start it — run in your project terminal, or paste the agent phrase in Cursor chat and let the agent run the command.</p>' +
-      '<div class="vp-type-micro" style="margin:0 0 6px;font-weight:600;">Terminal (project root)</div>' +
-      '<code id="vc-companion-cmd" style="display:block;margin:0 0 8px;padding:8px 10px;border-radius:6px;background:var(--background);border:1px solid var(--border);font:12px/1.4 ui-monospace,Menlo,monospace;word-break:break-all;">' +
-      escape(companionStartCommand()) +
-      '</code>' +
-      '<div class="vp-type-micro" style="margin:0 0 6px;font-weight:600;">First time in this repo</div>' +
-      '<code style="display:block;margin:0 0 8px;padding:8px 10px;border-radius:6px;background:var(--background);border:1px solid var(--border);font:12px/1.4 ui-monospace,Menlo,monospace;word-break:break-all;">' +
-      escape(companionFirstTimeCommand()) +
-      '</code>' +
-      '<div class="vp-type-micro" style="margin:0 0 6px;font-weight:600;">Cursor agent phrase</div>' +
-      '<code id="vc-companion-agent-phrase" style="display:block;margin:0 0 10px;padding:8px 10px;border-radius:6px;background:var(--background);border:1px solid var(--border);font:12px/1.4 ui-monospace,Menlo,monospace;">' +
-      escape(COMPANION_AGENT_PHRASE) +
-      '</code>' +
-      group(
-        btn('primary', 'Retry connection', { id: 'vc-companion-retry', type: 'button' }, { size: 'compact', flex: true }) +
-          btn('secondary', 'Copy command', { id: 'vc-companion-copy-cmd', type: 'button' }, { size: 'compact', flex: true }) +
-          btn('secondary', 'Copy agent phrase', { id: 'vc-companion-copy-agent', type: 'button' }, { size: 'compact', flex: true }),
-        { stretch: true }
+      '<section id="vc-history" class="vp-panel-block">' +
+      '<div id="vc-history-list"></div>' +
+      '</section>' +
+      '<section id="vc-settings" class="vp-panel-block">' +
+      '<div class="vp-type-label vc-tool-heading">Settings</div>' +
+      '<div class="vc-settings-block">' +
+      '<div class="vc-readout-label">Appearance</div>' +
+      '<div class="vc-settings-actions">' +
+      btn('secondary', 'Light', { id: 'vc-settings-light', type: 'button' }) +
+      btn('secondary', 'Dark', { id: 'vc-settings-dark', type: 'button' }) +
+      '</div></div>' +
+      '<div class="vc-settings-block">' +
+      field(
+        'Max alternatives',
+        select({ id: 'vc-settings-option-count' }, '', {
+          options: [2, 3, 4, 5, 6, 7].map(function (n) {
+            return { value: String(n), label: String(n), selected: n === DEFAULT_GLEAN_OPTION_COUNT };
+          }),
+          width: 'calc(4.75rem + 8px)'
+        }),
+        { layout: 'inline', className: 'vp-field--option-count' }
       ) +
       '</div>' +
-      '<div id="vc-team-auth" style="display:none;margin:0 0 10px;padding:10px;border:1px solid var(--border);border-radius:8px;background:oklch(0.97 0.01 180);">' +
+      '</section>' +
+      '<p id="vc-status" class="vp-panel-block vp-panel-block--plain vp-muted vp-type-support crank-hidden" aria-live="polite"></p>' +
+      '<div id="vc-toast" style="display:none;"></div>' +
+      '<div id="vc-companion-offline" class="vp-panel-block crank-hidden" style="display:none;">' +
+      '<div class="vc-offline-copy">' +
+      '<div class="vp-type-label vc-offline-title">Agent offline</div>' +
+      '<p class="vc-offline-lead">Ask Glean needs the companion running on this machine. Crank checks again every few seconds. If it stays offline, Diagnose with agent copies a prompt you can paste into chat so the agent can find the cause and start it.</p>' +
+      '</div>' +
+      '<div class="vc-offline-actions">' +
+      btn('secondary', 'Retry connection', { id: 'vc-companion-retry', type: 'button' }) +
+      btn('secondary', 'Diagnose with agent', { id: 'vc-companion-diagnose', type: 'button' }) +
+      '</div>' +
+      '</div>' +
+      '<section id="vc-team-auth" class="vp-panel-block vp-panel-section crank-hidden" style="display:none;">' +
       '<div class="vp-type-label" style="font-weight:620;margin-bottom:6px;">Team token required</div>' +
       '<p class="vp-muted vp-type-micro" style="margin:0 0 8px;line-height:1.45;">Paste the same value as <code>CRANK_TEAM_TOKEN</code> in your project <code>.env</code>. It is saved in this browser only — not sent to chat.</p>' +
-      '<input type="password" id="vc-team-token" placeholder="Crank-…" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--background);color:var(--foreground);font:13px/1.4 ui-sans-serif,system-ui,sans-serif;margin-bottom:8px;" />' +
-      btn('primary', 'Save token', { id: 'vc-team-token-save' }, { size: 'compact', flex: true }) +
+      (ui.vpInputHtml
+        ? ui.vpInputHtml({
+            id: 'vc-team-token',
+            type: 'password',
+            placeholder: 'Crank-…',
+            autocomplete: 'off'
+          })
+        : '<input type="password" id="vc-team-token" placeholder="Crank-…" autocomplete="off" />') +
+      btn('primary', 'Save token', { id: 'vc-team-token-save' }, { flex: true, className: 'vp-button-accent-surface' }) +
+      '</section>' +
+      buildGleanContextFormHtml(ui) +
+      '<section id="vc-edit" class="vp-panel-block vp-panel-section crank-hidden"></section>' +
+      '<div id="vc-thinking" class="vp-panel-block vp-muted vp-type-support crank-hidden" style="display:none;white-space:pre-wrap;line-height:1.5;"></div>' +
+      '<div id="vc-variants" class="vp-panel-block vp-panel-section crank-hidden"></div>' +
+      '<div id="vc-agent-handoff" class="vp-panel-block crank-hidden" style="display:none;"></div>' +
       '</div>' +
-      '<div id="vc-glean-options" style="margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
-      '<label for="vc-option-count" class="vp-type-label" style="display:flex;align-items:center;gap:6px;cursor:help;" title="Number of new rewritten alternatives (original draft is not shown). Fewer may reduce wait slightly; most latency is still agent runtime (~1–2 min).">' +
-      'New alternatives' +
-      '<span class="vp-muted vp-type-micro" aria-hidden="true">(?)</span>' +
-      '</label>' +
-      '<select id="vc-option-count" class="vp-type-support" style="min-width:4.5rem;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--background);color:var(--foreground);">' +
-      [2, 3, 4, 5, 6]
-        .map(function (n) {
-          return (
-            '<option value="' +
-            n +
-            '"' +
-            (n === DEFAULT_GLEAN_OPTION_COUNT ? ' selected' : '') +
-            '>' +
-            n +
-            '</option>'
-          );
-        })
-        .join('') +
-      '</select>' +
+      '<footer class="vp-panel-footer" id="vc-panel-footer">' +
+      '<div class="vp-panel-block">' +
+      buildGleanOptionsHtml(ui) +
       '</div>' +
+      '<div class="vp-panel-block">' +
       group(
-        btn('secondary', 'Ask Glean', { id: 'vc-glean', disabled: true }, { size: 'compact', flex: true }),
-        { stretch: true }
-      ) +
-      '<div id="vc-edit" style="margin-top:12px;"></div>' +
-      '<div id="vc-thinking" class="vp-muted vp-type-support" style="display:none;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:8px;white-space:pre-wrap;line-height:1.5;font-size:12px;background:oklch(0.97 0.01 180);max-height:none;overflow:visible;"></div>' +
-      '<div id="vc-actions" style="margin-top:10px;">' +
-      group(
-        btn('secondary', 'Preview', { id: 'vc-preview', disabled: true }, { size: 'compact', flex: true }) +
-          btn('primary', 'Copy', { id: 'vc-copy-edits', disabled: true }, { size: 'compact', flex: true }),
+        btn('primary', 'Ask Glean', { id: 'vc-glean' }, { flex: true }),
         { stretch: true }
       ) +
       '</div>' +
-      '<div id="vc-variants" style="margin-top:12px;"></div>' +
-      '<div id="vc-agent-handoff" style="display:none;margin:12px 0 0;padding:10px;border:1px solid var(--border);border-radius:8px;background:oklch(0.97 0.01 180);"></div>' +
+      '<div class="vp-panel-block" id="vc-actions">' +
+      group(
+        btn('secondary', 'Preview', { id: 'vc-preview', disabled: true }, { flex: true }) +
+          btn(
+            'primary',
+            'Copy',
+            { id: 'vc-copy-edits', disabled: true },
+            { flex: true, className: 'vp-button-accent-surface' }
+          ),
+        { stretch: true }
+      ) +
+      '</div>' +
+      '</footer>' +
+      '<div id="vc-chrome-footer"></div>' +
       '</div>';
 
-    panel.querySelector('#vc-close').addEventListener('click', closePanel);
+    panel.querySelectorAll('.vc-surface-tab').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        setPanelSurface(btn.getAttribute('data-crank-surface'));
+      });
+    });
+    const layerHost = panel.querySelector('#vc-layers');
+    if (layerHost && !layerHost.__crankBound) {
+      layerHost.__crankBound = true;
+      layerHost.addEventListener('click', function (ev) {
+        if (ev.target && ev.target.closest && ev.target.closest('[data-layer-check]')) return;
+        const row = ev.target && ev.target.closest ? ev.target.closest('[data-layer-focus]') : null;
+        if (!row || !layerHost.contains(row)) return;
+        const el = layerCatalog[Number(row.getAttribute('data-layer-focus'))];
+        if (!(el instanceof Element)) return;
+        layerFocus = el;
+        checkedLayers = [el];
+        selectedEl = el;
+        commitLayerStrings();
+        renderLayerList();
+        showLayerHighlight(el);
+      });
+      layerHost.addEventListener('change', function (ev) {
+        const box = ev.target && ev.target.closest ? ev.target.closest('[data-layer-check]') : null;
+        if (!box || !layerHost.contains(box)) return;
+        const el = layerCatalog[Number(box.getAttribute('data-layer-check'))];
+        if (!(el instanceof Element)) return;
+        const index = checkedLayers.indexOf(el);
+        if (box.checked && index < 0) checkedLayers.push(el);
+        else if (!box.checked && index >= 0) checkedLayers.splice(index, 1);
+        commitLayerStrings();
+      });
+      layerHost.addEventListener('mouseover', function (ev) {
+        const row = ev.target && ev.target.closest ? ev.target.closest('[data-layer-focus]') : null;
+        if (!row) return;
+        const el = layerCatalog[Number(row.getAttribute('data-layer-focus'))];
+        showLayerHighlight(el);
+      });
+      layerHost.addEventListener('mouseleave', function () {
+        if (panel && panel.getAttribute('data-crank-surface') === 'layers') {
+          showLayerHighlight(layerFocus);
+        }
+      });
+    }
+    const backBtn = panel.querySelector('#vc-back');
+    if (backBtn) {
+      backBtn.addEventListener('click', function () {
+        setPanelStep('ask');
+      });
+    }
+    applyPanelTheme(readPanelTheme());
+    initDepthTune();
+    const panelBody = panel.querySelector('.vp-panel-body');
+    if (panelBody) bindOverlayScrollbar(panelBody);
     const companionRetry = panel.querySelector('#vc-companion-retry');
-    const companionCopyCmd = panel.querySelector('#vc-companion-copy-cmd');
-    const companionCopyAgent = panel.querySelector('#vc-companion-copy-agent');
+    const companionDiagnose = panel.querySelector('#vc-companion-diagnose');
     if (companionRetry) {
       companionRetry.addEventListener('click', function () {
         retryCompanionConnection();
       });
     }
-    if (companionCopyCmd) {
-      companionCopyCmd.addEventListener('click', async function () {
-        const ok = await copyTextToClipboard(companionStartCommand());
-        showToast(
-          ok ? 'Copied terminal command' : 'Copy failed — select the command text',
-          ok ? 'ok' : 'error'
-        );
-      });
-    }
-    if (companionCopyAgent) {
-      companionCopyAgent.addEventListener('click', async function () {
-        const ok = await copyTextToClipboard(COMPANION_AGENT_PHRASE);
-        showToast(
-          ok ? 'Copied agent phrase — ' + PASTE_IN_AGENT_CHAT : 'Copy failed',
-          ok ? 'ok' : 'error'
-        );
+    if (companionDiagnose) {
+      companionDiagnose.addEventListener('click', async function () {
+        const ok = await copyTextToClipboard(companionDiagnosePrompt());
+        const msg = ok
+          ? 'Copied diagnose prompt — ' + PASTE_IN_AGENT_CHAT
+          : 'Copy failed — allow clipboard access and try again';
+        showToast(msg, ok ? 'ok' : 'error');
+        setStatus(msg);
       });
     }
     const teamTokenInput = panel.querySelector('#vc-team-token');
@@ -2155,7 +5129,7 @@
         }
         const previewId = target.getAttribute('data-variant-preview');
         if (previewId) {
-          applyVariant(previewId, { syncEditors: false, persist: false });
+          previewVariantOnSelection(previewId);
           return;
         }
         const copyId = target.getAttribute('data-variant-copy');
@@ -2168,8 +5142,15 @@
     if (optionCountSel) {
       try {
         const saved = localStorage.getItem(OPTION_COUNT_KEY);
-        if (saved && [2, 3, 4, 5, 6].indexOf(parseInt(saved, 10)) >= 0) {
-          optionCountSel.value = String(parseInt(saved, 10));
+        if (saved) {
+          const n = parseInt(saved, 10);
+          if (Number.isFinite(n)) {
+            const clamped = Math.min(
+              GLEAN_OPTION_COUNT_MAX,
+              Math.max(GLEAN_OPTION_COUNT_MIN, n)
+            );
+            setFieldSelectValue('vc-option-count', String(clamped));
+          }
         }
       } catch (_) {}
       optionCountSel.addEventListener('change', function () {
@@ -2178,6 +5159,272 @@
         } catch (_) {}
       });
     }
+    initFieldControls();
+    bindGleanContextForm();
+    bindTextareaAutoGrow();
+    bindOptionalGleanFields();
+    panel.setAttribute('data-crank-view', 'copy');
+    const settingsLight = panel.querySelector('#vc-settings-light');
+    const settingsDark = panel.querySelector('#vc-settings-dark');
+    const settingsDock = panel.querySelector('#vc-settings-dock');
+    const settingsCount = panel.querySelector('#vc-settings-option-count');
+    if (settingsLight) {
+      settingsLight.addEventListener('click', function () {
+        applyPanelTheme('light');
+        syncSettingsControls();
+      });
+    }
+    if (settingsDark) {
+      settingsDark.addEventListener('click', function () {
+        applyPanelTheme('dark');
+        syncSettingsControls();
+      });
+    }
+    if (settingsDock) {
+      settingsDock.addEventListener('click', function () {
+        togglePanelDock();
+        syncSettingsControls();
+      });
+    }
+    if (settingsCount) {
+      settingsCount.addEventListener('change', function () {
+        try {
+          localStorage.setItem(OPTION_COUNT_KEY, settingsCount.value);
+        } catch (_) {}
+        setFieldSelectValue('vc-option-count', settingsCount.value);
+      });
+    }
+    bindDepthTuneSliders();
+    const historyList = panel.querySelector('#vc-history-list');
+    if (historyList && !historyList.__crankBound) {
+      historyList.__crankBound = true;
+      historyList.addEventListener('click', function (ev) {
+        const openBtn = ev.target && ev.target.closest ? ev.target.closest('[data-history-preview]') : null;
+        if (openBtn) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openHistoryPreview(openBtn.getAttribute('data-history-preview'));
+          return;
+        }
+        const del = ev.target && ev.target.closest ? ev.target.closest('[data-history-delete]') : null;
+        if (del) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          deleteHistoryRun(del.getAttribute('data-history-delete'));
+          return;
+        }
+        const row = ev.target && ev.target.closest ? ev.target.closest('[data-history-id]') : null;
+        if (!row) return;
+        openHistoryRun(row.getAttribute('data-history-id'));
+      });
+      historyList.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        const openBtn = ev.target && ev.target.closest ? ev.target.closest('[data-history-preview]') : null;
+        if (openBtn) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openHistoryPreview(openBtn.getAttribute('data-history-preview'));
+          return;
+        }
+        const del = ev.target && ev.target.closest ? ev.target.closest('[data-history-delete]') : null;
+        if (del) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          deleteHistoryRun(del.getAttribute('data-history-delete'));
+          return;
+        }
+        const row = ev.target && ev.target.closest ? ev.target.closest('[data-history-id]') : null;
+        if (!row || !historyList.contains(row)) return;
+        ev.preventDefault();
+        openHistoryRun(row.getAttribute('data-history-id'));
+      });
+    }
+    setPanelStep('ask');
+    startPageSensor();
+    schedulePageSense();
+  }
+
+  function setPanelSurface(surface) {
+    if (!panel) return;
+    const next = surface === 'layers' ? 'layers' : 'crank';
+    panel.setAttribute('data-crank-surface', next);
+    panel.querySelectorAll('.vc-surface-tab').forEach(function (btn) {
+      const on = btn.getAttribute('data-crank-surface') === next;
+      btn.classList.toggle('is-active', on);
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    if (next === 'layers') {
+      renderLayerList();
+      showLayerHighlight(layerFocus);
+    } else {
+      highlight.remove();
+    }
+  }
+
+  function layerDescriptor(el) {
+    const tag = String(el.tagName || '').toLowerCase();
+    const classes = Array.from(el.classList || [])
+      .filter(function (cls) {
+        return cls && cls.indexOf('vp-') !== 0 && cls.indexOf('crank-') !== 0;
+      })
+      .slice(0, 2);
+    return {
+      name: classes.length ? tag + '.' + classes.join('.') : tag,
+      text: String(el.innerText || el.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 72)
+    };
+  }
+
+  function showLayerHighlight(el) {
+    if (!(el instanceof Element)) return;
+    const rect = el.getBoundingClientRect();
+    if (!highlight.parentNode) document.documentElement.appendChild(highlight);
+    highlight.style.left = rect.left + 'px';
+    highlight.style.top = rect.top + 'px';
+    highlight.style.width = rect.width + 'px';
+    highlight.style.height = rect.height + 'px';
+  }
+
+  function renderLayerList() {
+    const host = panel && panel.querySelector('#vc-layers');
+    if (!host) return;
+    const escape = (UI().escapeHtml) || function (value) {
+      return String(value || '');
+    };
+    if (!(layerFocus instanceof Element)) {
+      layerCatalog = [];
+      host.innerHTML = '<p class="vc-tool-lead">Select a region to see its layers.</p>';
+      return;
+    }
+    const chain = [];
+    let current = layerFocus;
+    while (
+      current &&
+      current.nodeType === 1 &&
+      current !== document.body &&
+      current !== document.documentElement
+    ) {
+      chain.unshift(current);
+      current = current.parentElement;
+    }
+    function hasLayerText(el) {
+      if (!(el instanceof Element) || isCrankChrome(el) || isSkippedCopyTag(el)) return false;
+      const text = String(el.innerText || el.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const placeholder = el.getAttribute && el.getAttribute('placeholder');
+      return !!(text || placeholder);
+    }
+    const children = Array.from(layerFocus.children || [])
+      .filter(hasLayerText)
+      .slice(0, 80);
+    const siblings = layerFocus.parentElement
+      ? Array.from(layerFocus.parentElement.children || [])
+          .filter(function (el) {
+            return el !== layerFocus && hasLayerText(el);
+          })
+          .slice(0, 24)
+      : [];
+    layerCatalog = [];
+    function row(el, depth, isCurrent) {
+      const index = layerCatalog.length;
+      layerCatalog.push(el);
+      const desc = layerDescriptor(el);
+      const checked = checkedLayers.indexOf(el) >= 0;
+      return (
+        '<div class="vc-layer-row' +
+        (isCurrent ? ' is-current' : '') +
+        '" style="padding-left:' +
+        depth * 14 +
+        'px">' +
+        '<input type="checkbox" data-layer-check="' +
+        index +
+        '"' +
+        (checked ? ' checked' : '') +
+        ' aria-label="Include ' +
+        escape(desc.name) +
+        '" />' +
+        '<button type="button" class="vp-context-btn' +
+        (isCurrent ? ' vp-context-btn--emphasis' : '') +
+        '" data-layer-focus="' +
+        index +
+        '"><span class="vp-strong">' +
+        escape(desc.name) +
+        '</span>' +
+        (desc.text ? '<span class="vc-layer-snippet">' + escape(desc.text) + '</span>' : '') +
+        '</button></div>'
+      );
+    }
+    const pathDepth = Math.max(0, chain.length - 1);
+    host.innerHTML =
+      '<div class="vp-section-title"><span>Layer path</span></div>' +
+      chain
+        .map(function (el, index) {
+          return row(el, index, el === layerFocus);
+        })
+        .join('') +
+      (siblings.length
+        ? '<div class="vp-section-title" style="margin-top:12px;"><span>Siblings</span></div>' +
+          siblings
+            .map(function (el) {
+              return row(el, pathDepth, false);
+            })
+            .join('')
+        : '') +
+      (children.length
+        ? '<div class="vp-section-title" style="margin-top:12px;"><span>Children</span></div>' +
+          children
+            .map(function (el) {
+              return row(el, chain.length, false);
+            })
+            .join('')
+        : '<p class="vc-tool-lead" style="margin-top:8px;">This layer has no inner layers.</p>');
+  }
+
+  function snapshotSelectionNodes() {
+    originalSnapshot = selectedNodes.map(function (node) {
+      return Object.assign({}, node, {
+        text: node.text,
+        previousText: node.text,
+        originalText: node.originalText != null ? node.originalText : node.text
+      });
+    });
+  }
+
+  function selectionPayloadFor(el) {
+    return {
+      origin: location.origin,
+      pageUrl: location.href,
+      selector: el ? cssPath(el) : '',
+      tagName: el ? el.tagName.toLowerCase() : '',
+      nodes: selectedNodes,
+      combinedText: selectedNodes
+        .map(function (node) {
+          return node.text;
+        })
+        .join('\n'),
+      meta: { pathHints: pathHintsFromLocation() }
+    };
+  }
+
+  async function commitLayerStrings() {
+    selectedEl = layerFocus || selectedEl;
+    selectedNodes = stringsFromCheckedLayers();
+    snapshotSelectionNodes();
+    renderNodes();
+    setGleanFieldValue('#vc-glean-strings', formatGleanDraftFromSelection());
+    updateGleanContextValidationUI();
+    syncGleanButton();
+    const payload = selectionPayloadFor(selectedEl);
+    pendingSelectionPayload = payload;
+    try {
+      const authed = await ensureTeamToken();
+      if (!authed) return;
+      pendingSelectionPayload = null;
+      await registerSelection(payload, { restore: false });
+    } catch (_) {}
   }
 
   function renderNodes() {
@@ -2187,18 +5434,18 @@
 
     if (!selectedNodes.length) {
       editEl.innerHTML = '';
+      editEl.classList.add('crank-hidden');
       setEditButtons(false);
       return;
     }
+    // Manual string editors stay out of the main ask view. A later option can show them.
+    editEl.classList.add('crank-hidden');
 
     const field = ui.vpFieldHtml || function (label, control) {
       return '<div><div>' + label + '</div>' + control + '</div>';
     };
     const area = ui.vpTextareaHtml || function (attrs, content) {
       return '<textarea id="' + (attrs.id || '') + '"' + (attrs.disabled ? ' disabled' : '') + '>' + (content || '') + '</textarea>';
-    };
-    const badge = ui.vpCapabilityBadgeHtml || function (_mode, text) {
-      return '<span class="vp-type-micro">' + text + '</span>';
     };
     const escape = ui.escapeHtml || function (v) {
       return String(v || '');
@@ -2207,17 +5454,6 @@
     editEl.innerHTML = selectedNodes
       .map(function (n, idx) {
         const label = roleLabel(n.role, n, idx, selectedNodes);
-        const chips = sourceChips(n.textSource);
-        const mode = n.editable ? 'editable' : 'read-only';
-        const meta =
-          chips
-            .map(function (chip) {
-              return badge(mode, chip);
-            })
-            .join(' ') +
-          (n.editable
-            ? ''
-            : '<span class="vp-muted vp-type-micro"> Locked</span>');
 
         const dynamicHints = (n.parts || [])
           .filter(function (p) {
@@ -2234,33 +5470,35 @@
 
         if (!n.editable) {
           return (
-            '<div class="vp-field" style="margin-bottom:10px;">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px;">' +
-            '<span class="vp-type-label">' +
-            escape(label) +
-            '</span>' +
-            meta +
-            '</div>' +
-            '<div class="vp-type-support" style="padding:8px;border:1px dashed var(--border);border-radius:8px;opacity:0.85;">' +
-            escape(n.text) +
-            '</div>' +
+            field(
+              label,
+              '<div class="vp-type-support" style="opacity:0.85;white-space:pre-wrap;word-break:break-word;">' +
+                escape(n.text) +
+                '</div>'
+            ) +
             (dynamicHints
-              ? '<div style="margin-top:4px;">' + dynamicHints + '</div>'
-              : '') +
-            '</div>'
+              ? '<div class="vp-muted vp-type-micro" style="margin:-2px 0 4px;">' +
+                dynamicHints +
+                '</div>'
+              : '')
           );
         }
 
-        return (
-          field(
-            label,
-            area(
-              { id: 'vc-edit-' + n.path, rows: '2', 'data-path': n.path },
+        const editArea = ui.vpParagraphFieldHtml
+          ? ui.vpParagraphFieldHtml(
+              { id: 'vc-edit-' + n.path, rows: '1', 'data-path': n.path },
               n.text,
-              { size: 'compact' }
-            ),
-            { size: 'compact', metaHtml: meta }
-          ) +
+              { autogrow: true, paragraph: true }
+            )
+          : ui.vpTextareaHtml
+            ? ui.vpTextareaHtml(
+                { id: 'vc-edit-' + n.path, rows: '1', 'data-path': n.path },
+                n.text,
+                { autogrow: true, paragraph: true }
+              )
+            : area({ id: 'vc-edit-' + n.path, rows: '2', 'data-path': n.path }, n.text);
+        return (
+          field(label, editArea) +
           (dynamicHints
             ? '<div class="vp-muted vp-type-micro" style="margin:-4px 0 10px;">Vars: ' +
               dynamicHints +
@@ -2274,6 +5512,9 @@
       return n.editable;
     });
     setEditButtons(anyEditable);
+    prefillGleanStringsFromSelection(false);
+    scheduleAutogrowSync(editEl);
+    scheduleAutogrowSync(panel);
   }
 
   function hasEditDeltas() {
@@ -2415,14 +5656,20 @@
       });
 
     const variantNodes = (variant.nodes || []).filter(function (n) {
-      return !isDynamicOnlyNode(n);
+      return !isRuntimeOnlyNode(n);
     });
     if (variantNodes.length) {
       variantNodes.forEach(function (n, idx) {
-        const text = String(n && n.text != null ? n.text : '').trim();
+        const text = String(
+          n && n.text != null && String(n.text).trim()
+            ? n.text
+            : n && n.originalText != null
+              ? n.originalText
+              : ''
+        ).trim();
         if (!text) return;
         rows.push({
-          label: roleLabel(n.role, n, idx, variantNodes),
+          label: n.copyLabel || n.label || roleLabel(n.role, n, idx, variantNodes),
           text: text
         });
       });
@@ -2481,12 +5728,7 @@
     if (!box) return;
     box.querySelectorAll('[data-variant-card]').forEach(function (card) {
       const active = card.getAttribute('data-variant-card') === String(variantId || '');
-      card.style.borderColor = active
-        ? 'color-mix(in oklch, var(--ring, #888) 45%, var(--border))'
-        : '';
-      card.style.boxShadow = active
-        ? '0 0 0 1px color-mix(in oklch, var(--ring, #888) 25%, transparent)'
-        : '';
+      card.classList.toggle('is-active', active);
     });
   }
 
@@ -2540,76 +5782,99 @@
     };
     const title = variant.label || variant.title || variant.id || 'Option';
     const rows = variantFieldRows(variant);
+    function readout(label, text, kind) {
+      return (
+        '<div class="vc-readout' +
+        (kind ? ' vc-readout--' + kind : '') +
+        '">' +
+        '<div class="vc-readout-label">' +
+        escape(label || 'Copy') +
+        '</div>' +
+        '<div class="vc-readout-text">' +
+        escape(text) +
+        '</div></div>'
+      );
+    }
     let bodyHtml = '';
 
     if (rows.length) {
       bodyHtml = rows
         .map(function (row) {
-          return (
-            '<div class="vc-variant-field" style="margin-top:8px;">' +
-            '<div class="vp-muted vp-type-micro" style="margin-bottom:2px;">' +
-            escape(row.label || 'Copy') +
-            '</div>' +
-            '<div class="vp-type-body" style="white-space:pre-wrap;word-break:break-word;color:var(--foreground);">' +
-            escape(row.text) +
-            '</div>' +
-            '</div>'
-          );
+          return readout(row.label || 'Copy', row.text, 'copy');
         })
         .join('');
     } else if (variant.rawText) {
-      bodyHtml =
-        '<div class="vp-type-support" style="margin-top:8px;white-space:pre-wrap;word-break:break-word;line-height:1.4;color:var(--foreground);">' +
-        escape(String(variant.rawText)) +
-        '</div>';
+      bodyHtml = readout('Copy', String(variant.rawText), 'copy');
     } else if (variant.summary) {
-      bodyHtml =
-        '<div class="vp-muted vp-type-support" style="margin-top:8px;white-space:pre-wrap;word-break:break-word;">' +
-        escape(variant.summary) +
-        '</div>';
+      bodyHtml = readout('Copy', variant.summary, 'copy');
     }
 
     if (variant.scores) {
-      bodyHtml +=
-        '<div class="vp-muted vp-type-micro" style="margin-top:8px;padding:8px;border-radius:8px;background:oklch(0.97 0.01 180);line-height:1.45;">' +
-        '<span style="font-weight:600;">Agent notes:</span> ' +
-        escape(String(variant.scores)) +
-        '</div>';
+      bodyHtml += readout('Agent notes', String(variant.scores), 'notes');
     }
 
     const recommended = !!variant.recommended;
+    const previewIcon =
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+    const copyIcon =
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     return (
-      '<article class="vp-panel-block vc-variant-card' +
+      '<article class="vc-variant-row' +
       (recommended ? ' is-recommended' : '') +
       '" data-variant-card="' +
       escape(variant.id) +
-      '" style="padding:10px 12px;margin-bottom:8px;">' +
-      '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">' +
-      '<div class="vp-type-label" style="font-weight:var(--vp-font-weight-title,620);color:var(--foreground);line-height:var(--vp-line-height-label,1.4);">' +
+      '">' +
+      '<div class="vc-variant-head">' +
+      '<div class="vp-type-label vc-variant-title">' +
       escape(title) +
+      (recommended ? '<span class="vc-variant-recommended">Recommended</span>' : '') +
       '</div>' +
-      (recommended ? badge('preview', 'Recommended') : '') +
+      '<div class="vc-variant-tools">' +
+      btn(
+        'ghost',
+        previewIcon,
+        {
+          type: 'button',
+          'data-variant-preview': variant.id,
+          'aria-label': 'Preview this option on the selected strings',
+          title: 'Preview on the selected strings',
+          hidden: true
+        },
+        { icon: true }
+      ) +
+      btn(
+        'ghost',
+        copyIcon,
+        {
+          type: 'button',
+          'data-variant-copy': variant.id,
+          'aria-label': 'Copy this option for the agent',
+          title: 'Copy for the agent'
+        },
+        { icon: true }
+      ) +
+      '</div>' +
       '</div>' +
       bodyHtml +
-      '<div style="margin-top:10px;">' +
+      '<div style="margin-top:10px;" class="vc-variant-actions">' +
       group(
         btn(
           'secondary',
           'Preview',
-          { 'data-variant-preview': variant.id, type: 'button' },
-          { size: 'compact', flex: true }
+          { 'data-variant-preview': variant.id, type: 'button', hidden: true },
+          { flex: true }
         ) +
           btn(
             'primary',
             'Copy',
             { 'data-variant-copy': variant.id, type: 'button' },
-            { size: 'compact', flex: true }
+            { flex: true }
           ) +
           btn(
             'secondary',
             'Agent',
             { 'data-variant-agent': variant.id, type: 'button' },
-            { size: 'compact', flex: true }
+            { flex: true }
           ),
         { stretch: true }
       ) +
@@ -2621,24 +5886,24 @@
   function renderVariants(variants) {
     const box = panel.querySelector('#vc-variants');
     const ui = UI();
-    const escape = ui.escapeHtml || String;
     lastVariants = Array.isArray(variants) ? variants : [];
     if (!lastVariants.length) {
       box.innerHTML = '';
+      box.classList.add('crank-hidden');
       return;
     }
-    const titleHtml = ui.vpSectionTitleHtml
-      ? ui.vpSectionTitleHtml('New alternatives')
-      : '<div class="vp-section-title"><span>' + escape('New alternatives') + '</span></div>';
+    box.classList.remove('crank-hidden');
     box.innerHTML =
-      '<div style="margin-bottom:8px;">' +
-      titleHtml +
-      '</div>' +
-      lastVariants.map(function (v) {
-        return renderVariantCard(v, ui);
-      }).join('');
+      '<div class="vc-variants-list">' +
+      lastVariants
+        .map(function (v) {
+          return renderVariantCard(v, ui);
+        })
+        .join('<div class="vp-panel-stroke vc-variant-divider" role="separator"></div>') +
+      '</div>';
 
     markActiveVariantCard(activeVariantId);
+    refreshPagePresence();
   }
 
   async function queueAgentVariant(variantId) {
@@ -2705,8 +5970,11 @@
   }
 
   async function copyVariantPrompt(variantId) {
-    if (!sessionId) {
-      const msg = 'Select a region and Ask Glean before using Copy';
+    const local = lastVariants.find(function (v) {
+      return v && v.id === variantId;
+    });
+    if (!local) {
+      const msg = 'That option is no longer in this response';
       showToast(msg, 'error');
       setStatus(msg);
       return;
@@ -2719,14 +5987,37 @@
     }
     activeVariantId = variantId;
     markActiveVariantCard(variantId);
-    showToast('Building copy prompt…', 'info');
-    setStatus('Building copy prompt…');
+    showToast('Copying agent prompt…', 'info');
+    setStatus('Copying agent prompt…');
     try {
       const data = await postJson(
         '/api/copy-prompt',
         {
-          sessionId: sessionId,
-          variantId: variantId
+          sessionId: sessionId || undefined,
+          variantId: variantId,
+          pageUrl: location.href,
+          selector: selectedEl ? cssPath(selectedEl) : '',
+          sourceNodes: selectedNodes.map(function (node) {
+            return {
+              id: node.id,
+              path: node.path,
+              role: node.role,
+              selector: node.selector,
+              label: node.label,
+              editable: node.editable,
+              text: node.text,
+              originalText:
+                node.originalText != null ? node.originalText : node.text,
+              textSource: node.textSource || null,
+              parts: node.parts || null
+            };
+          }),
+          variant: {
+            id: local.id,
+            label: local.label || local.title || local.id,
+            nodes: local.nodes || [],
+            fields: local.fields || null
+          }
         },
         { timeoutMs: 15000 }
       );
@@ -2764,6 +6055,101 @@
       showToast(msg, 'error');
       setStatus(msg);
     }
+  }
+
+  function clearPagePreview() {
+    if (previewRestore.length) {
+      for (let i = previewRestore.length - 1; i >= 0; i -= 1) {
+        const item = previewRestore[i];
+        if (item.el && item.el.isConnected !== false) {
+          writeVisibleText(item.el, item.node, item.previous);
+        }
+      }
+      previewRestore = [];
+    } else {
+      restoreOriginal();
+    }
+    previewedVariantId = null;
+    activeVariantId = null;
+    markActiveVariantCard(null);
+  }
+
+  function textMatchesOriginal(el, node, original) {
+    if (!el || !original) return !original;
+    return currentUnitText(el, node).replace(/\s+/g, ' ').trim() === original;
+  }
+
+  function previewTargetsOnThisPage(nodes) {
+    const targets = [];
+    const used = new Set();
+    (nodes || []).forEach(function (node) {
+      if (!node || isDynamicOnlyNode(node)) return;
+      const original = String(node.originalText || node.previousText || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      let el = selectedEl ? resolveUnitElement(selectedEl, node) : null;
+      if (el && !textMatchesOriginal(el, node, original)) el = null;
+      if (!el && selectedEl && textMatchesOriginal(selectedEl, node, original)) el = selectedEl;
+      if (!el) el = elementMatchingOriginalText(node);
+      if (!el || isCrankChrome(el) || used.has(el)) return;
+      if (!textMatchesOriginal(el, node, original)) return;
+      used.add(el);
+      targets.push({ node: node, el: el });
+    });
+    return targets;
+  }
+
+  function previewVariantOnSelection(variantId) {
+    const local = lastVariants.find(function (v) {
+      return v && v.id === variantId;
+    });
+    if (!local) {
+      setStatus('That option is no longer in this response');
+      return;
+    }
+    if (previewedVariantId === variantId) {
+      clearPagePreview();
+      syncEditorsFromVariant({ nodes: originalSnapshot });
+      setStatus('Preview cleared');
+      return;
+    }
+    clearPagePreview();
+    const targets = previewTargetsOnThisPage(local.nodes || []);
+    if (!targets.length) {
+      setStatus('Those strings are not on this page, so nothing was changed.');
+      return;
+    }
+    previewRestore = targets.map(function (target) {
+      return {
+        el: target.el,
+        node: target.node,
+        previous: currentUnitText(target.el, target.node)
+      };
+    });
+    targets.forEach(function (target) {
+      writeVisibleText(target.el, target.node, String(target.node.text || ''));
+    });
+    previewedVariantId = variantId;
+    activeVariantId = variantId;
+    markActiveVariantCard(variantId);
+    syncEditorsFromVariant(local);
+    const pageUrl = String(local.pageUrl || '');
+    let otherPage = false;
+    try {
+      const saved = new URL(pageUrl, location.href);
+      otherPage = pageUrl && saved.origin + saved.pathname !== location.origin + location.pathname;
+    } catch (_) {
+      otherPage = !!pageUrl && pageUrl !== location.href;
+    }
+    setStatus(
+      otherPage
+        ? 'Previewing "' +
+            (local.label || 'this option') +
+            '" on the matching strings on this page. Click the eye again to restore.'
+        : 'Previewing "' +
+            (local.label || 'this option') +
+            '" on the page. Click the eye again to restore.'
+    );
   }
 
   async function applyVariant(variantId, options) {
@@ -2897,9 +6283,6 @@
   function resolveLatestThought(progress) {
     if (!progress) return 'Waiting on Glean…';
 
-    const elapsedSec = thinkingStartedAt
-      ? Math.round((Date.now() - thinkingStartedAt) / 1000)
-      : 0;
     const stage = progress.stage ? String(progress.stage) : '';
     const genericConnected = 'Connected — agent running…';
 
@@ -2919,15 +6302,8 @@
       return progress.latestThought || progress.text || 'Sending to Glean…';
     }
 
-    // Silent stream / wait — Glean often sends no tokens for ~1 min; rotate by elapsed.
     if (stage === 'stream_wait' || stage === 'waiting' || progress.text === genericConnected) {
-      if (elapsedSec < 15) {
-        return progress.text || 'Connecting to live agent stream…';
-      }
-      if (elapsedSec < 35) return 'Agent is analyzing your copy…';
-      if (elapsedSec < 60) return 'Agent is drafting alternatives…';
-      if (elapsedSec < 90) return 'Agent is formatting options…';
-      return 'Agent is finishing the response…';
+      return progress.text || 'Connected — agent running…';
     }
 
     if (progress.text) return String(progress.text);
@@ -2936,8 +6312,9 @@
 
   function renderThinking() {
     const el = panel.querySelector('#vc-thinking');
-    if (!el || !gleanActiveEpoch) return;
+    if (!el || !viewedRequestId) return;
     const progress = lastThinkingProgress || {};
+    el.classList.remove('crank-hidden');
     el.style.display = 'block';
 
     if (progress.live && progress.partial) {
@@ -2945,37 +6322,36 @@
     }
 
     const elapsed = thinkingElapsedLine();
-    const displayLines = [];
-    const partial = progress.partial || thinkingLivePartial;
+    const liveVariants = Array.isArray(progress.variants) ? progress.variants : [];
+    if (panel.getAttribute('data-crank-step') === 'thinking') {
+      renderVariants(liveVariants);
+    }
 
-    if (progress.live && partial) {
-      const body = streamingBodyLines(partial, 3);
-      if (body.length) {
-        for (let i = 0; i < body.length; i++) displayLines.push(body[i]);
-      } else {
-        displayLines.push(resolveLatestThought(progress));
-      }
+    const displayLines = [];
+    if (liveVariants.length) {
+      displayLines.push(
+        progress.text ||
+          'Writing option ' + liveVariants.length + '…'
+      );
     } else {
-      displayLines.push(resolveLatestThought(progress));
-      if (progress.detail && String(progress.detail).trim()) {
+      displayLines.push(
+        progress.live ? 'Writing options…' : resolveLatestThought(progress)
+      );
+      if (!progress.live && progress.detail && String(progress.detail).trim()) {
         displayLines.push(String(progress.detail).trim());
       }
     }
-
     displayLines.push(elapsed);
 
     el.style.whiteSpace = 'pre-wrap';
-    el.style.overflow = 'hidden';
+    el.style.overflow = 'visible';
     el.style.textOverflow = '';
-    el.style.maxHeight = 'min(6.5em, 96px)';
+    el.style.maxHeight = 'none';
     el.style.lineHeight = '1.45';
-    el.style.overflowY = 'auto';
+    el.style.overflowY = 'visible';
     el.style.overflowX = 'hidden';
-    el.style.fontFamily = progress.live && partial
-      ? 'ui-monospace,SFMono-Regular,Menlo,monospace'
-      : '';
+    el.style.fontFamily = '';
     el.textContent = displayLines.join('\n');
-    el.scrollTop = el.scrollHeight;
 
     const stage = progress.stage ? String(progress.stage) : '';
     const statusPreview = displayLines[0] || '';
@@ -2987,6 +6363,18 @@
       setStatus('Glean is streaming…');
     } else {
       setStatus('Waiting on Glean…');
+    }
+    if (!el.__crankScrolled) {
+      el.__crankScrolled = true;
+      const scroller = panel.querySelector('.vp-panel-body');
+      if (scroller) {
+        const top =
+          el.getBoundingClientRect().top -
+          scroller.getBoundingClientRect().top +
+          scroller.scrollTop -
+          12;
+        scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+      }
     }
   }
 
@@ -3001,7 +6389,7 @@
     thinkingLivePartial = '';
     if (thinkingUiTimer) clearInterval(thinkingUiTimer);
     thinkingUiTimer = setInterval(function () {
-      if (!gleanActiveEpoch) return;
+      if (!viewedRequestId) return;
       renderThinking();
     }, 1000);
   }
@@ -3016,9 +6404,19 @@
     thinkingLivePartial = '';
   }
 
+  function setPanelStep(step) {
+    if (!panel) return;
+    panel.setAttribute('data-crank-step', step === 'thinking' || step === 'results' ? step : 'ask');
+    const scroller = panel.querySelector('.vp-panel-body');
+    if (scroller) scroller.scrollTop = 0;
+    scheduleAutogrowSync(panel);
+  }
+
   function hideThinking() {
     const el = panel.querySelector('#vc-thinking');
     if (el) {
+      el.__crankScrolled = false;
+      el.classList.add('crank-hidden');
       el.style.display = 'none';
       el.textContent = '';
       el.style.maxHeight = '';
@@ -3029,93 +6427,378 @@
     stopThinkingClock();
   }
 
-  async function requestGlean() {
-    if (!sessionId) {
-      const authed = await ensureTeamToken();
-      if (!authed) {
-        showTeamAuthUI('panel');
-        setStatus('Paste your team token below, then click Save token');
-        return;
+  function hideCrankForShot() {
+    ['crank-highlight', 'vp-crank-select-hint'].forEach(function (id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.setAttribute('data-crank-shot-hidden', '1');
+      el.style.setProperty('visibility', 'hidden', 'important');
+    });
+  }
+
+  function showCrankAfterShot() {
+    document.querySelectorAll('[data-crank-shot-hidden]').forEach(function (el) {
+      el.style.removeProperty('visibility');
+      el.removeAttribute('data-crank-shot-hidden');
+    });
+  }
+
+  function revealSelectionForShot(el) {
+    const rect = el.getBoundingClientRect();
+    const viewW = window.innerWidth || 1;
+    const viewH = window.innerHeight || 1;
+    const onScreen =
+      rect.width > 2 &&
+      rect.height > 2 &&
+      rect.bottom > 8 &&
+      rect.right > 8 &&
+      rect.top < viewH - 8 &&
+      rect.left < viewW - 8;
+    if (onScreen) return function () {};
+    const saved = [];
+    let node = el.parentElement;
+    while (node) {
+      saved.push({ node: node, top: node.scrollTop, left: node.scrollLeft });
+      node = node.parentElement;
+    }
+    const winX = window.scrollX;
+    const winY = window.scrollY;
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    } catch (_) {
+      el.scrollIntoView(true);
+    }
+    return function () {
+      for (let i = saved.length - 1; i >= 0; i -= 1) {
+        saved[i].node.scrollTop = saved[i].top;
+        saved[i].node.scrollLeft = saved[i].left;
       }
-      await retryPendingSelection();
-      if (!sessionId) return;
+      window.scrollTo(winX, winY);
+    };
+  }
+
+  function selectionFrame(rect) {
+    const viewW = window.innerWidth || 1;
+    const viewH = window.innerHeight || 1;
+    const width = Math.max(rect.width + 220, Math.min(Math.max(viewW, rect.width + 220), 860));
+    const height = Math.max(rect.height + 180, Math.min(Math.max(viewH, rect.height + 180), 520));
+    return {
+      left: rect.left + rect.width / 2 - width / 2,
+      top: rect.top + rect.height / 2 - height / 2,
+      width: width,
+      height: height
+    };
+  }
+
+  function browserWindowBox() {
+    const screen = window.screen || {};
+    const screenLeft = Number(screen.availLeft || screen.left || 0);
+    const screenTop = Number(screen.availTop || screen.top || 0);
+    const screenWidth = Number(screen.width || 0);
+    const screenHeight = Number(screen.height || 0);
+    const reportedX = Number(window.screenX || 0);
+    const reportedY = Number(window.screenY || 0);
+    const alreadyGlobal =
+      screenWidth > 1 &&
+      reportedX >= screenLeft - 20 &&
+      reportedX <= screenLeft + screenWidth + 20 &&
+      reportedY >= screenTop - 20 &&
+      reportedY <= screenTop + screenHeight + 20;
+    return {
+      screenX: alreadyGlobal ? reportedX : screenLeft + reportedX,
+      screenY: alreadyGlobal ? reportedY : screenTop + reportedY,
+      screenLeft: screenLeft,
+      screenTop: screenTop,
+      screenWidth: screenWidth,
+      screenHeight: screenHeight,
+      outerWidth: window.outerWidth || 0,
+      outerHeight: window.outerHeight || 0,
+      innerWidth: window.innerWidth || 0,
+      innerHeight: window.innerHeight || 0
+    };
+  }
+
+  function selectionShotSpec(rect, match) {
+    const frame = selectionFrame(rect);
+    const box = browserWindowBox();
+    return {
+      title: document.title || '',
+      match: match || '',
+      screenX: box.screenX,
+      screenY: box.screenY,
+      screenLeft: box.screenLeft,
+      screenTop: box.screenTop,
+      screenWidth: box.screenWidth,
+      screenHeight: box.screenHeight,
+      outerWidth: box.outerWidth,
+      outerHeight: box.outerHeight,
+      innerWidth: box.innerWidth,
+      innerHeight: box.innerHeight,
+      frameLeft: frame.left,
+      frameTop: frame.top,
+      frameWidth: frame.width,
+      frameHeight: frame.height,
+      markerInner: 12,
+      viewCenterX: rect.left + rect.width / 2,
+      viewCenterY: rect.top + rect.height / 2,
+      viewWidth: pageViewSize().width,
+      viewHeight: pageViewSize().height,
+      selLeft: rect.left,
+      selTop: rect.top,
+      selWidth: rect.width,
+      selHeight: rect.height
+    };
+  }
+
+  function pageViewSize() {
+    let width = window.innerWidth || 0;
+    let height = window.innerHeight || 0;
+    if (panel && panel.parentNode && panel.getAttribute('data-crank-dock') === '1') {
+      const dock = panel.getBoundingClientRect().width || 0;
+      if (dock > 40 && dock < width) width -= dock;
     }
-    const companionOk =
-      typeof window.__crankProbeCompanion === 'function'
-        ? await window.__crankProbeCompanion()
-        : window.__CRANK_COMPANION_ONLINE__ !== false;
-    if (!companionOk) {
-      showCompanionOfflineUI();
-      showToast('Companion offline — start it, then click Retry', 'error');
+    return { width: width, height: height };
+  }
+
+  function placeShotMarker(rect) {
+    const existing = document.getElementById('crank-shot-marker');
+    if (existing) existing.remove();
+    const marker = document.createElement('div');
+    marker.id = 'crank-shot-marker';
+    const size = 18;
+    marker.style.cssText =
+      'position:fixed;z-index:2147483647;pointer-events:none;box-sizing:border-box;background:#ff00ff;border:3px solid #00ffff;width:' +
+      size +
+      'px;height:' +
+      size +
+      'px;left:' +
+      (rect.left + rect.width / 2 - size / 2) +
+      'px;top:' +
+      (rect.top + rect.height / 2 - size / 2) +
+      'px;';
+    document.documentElement.appendChild(marker);
+    return function () {
+      if (marker.parentNode) marker.parentNode.removeChild(marker);
+    };
+  }
+
+  async function captureSelectionShots() {
+    if (!selectedEl || !selectedEl.getBoundingClientRect) return null;
+    const restoreScroll = revealSelectionForShot(selectedEl);
+    hideCrankForShot();
+    try {
+      const previousTitle = document.title;
+      const match = 'crankcap' + Math.random().toString(16).slice(2, 10);
+      document.title = (previousTitle || 'Crank') + ' ' + match;
+      let removeMarker = function () {};
+      try {
+        await new Promise(function (resolve) {
+          requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+              setTimeout(resolve, 280);
+            });
+          });
+        });
+        const rect = selectedEl.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) return null;
+        removeMarker = placeShotMarker(rect);
+        await new Promise(function (resolve) {
+          requestAnimationFrame(function () {
+            setTimeout(resolve, 60);
+          });
+        });
+        const spec = selectionShotSpec(rect, match);
+        const located = await postJson('/api/screenshot', Object.assign({ locate: true }, spec));
+        removeMarker();
+        removeMarker = function () {};
+        if (!located || !located.ok || !(located.scale > 0)) return null;
+        await new Promise(function (resolve) {
+          requestAnimationFrame(function () {
+            requestAnimationFrame(resolve);
+          });
+        });
+        const data = await postJson(
+          '/api/screenshot',
+          Object.assign({}, spec, {
+            locate: false,
+            anchorX: located.x,
+            anchorY: located.y,
+            pixelScale: located.scale
+          })
+        );
+        if (!data || !data.ok || !data.path) return null;
+        return { tight: '', context: data.path };
+      } finally {
+        removeMarker();
+        document.title = previousTitle;
+      }
+    } catch (_) {
+      return null;
+    } finally {
+      showCrankAfterShot();
+      restoreScroll();
+    }
+  }
+  async function requestGlean() {
+    gleanValidationRequested = true;
+    const gleanValidation = updateGleanContextValidationUI();
+    if (!gleanValidation.ok) {
+      scrollToFirstGleanFieldError();
+      setStatus(GLEAN_REQUIRED_MSG);
+      syncGleanButton();
       return;
     }
-    if (gleanActiveEpoch) {
-      setStatus('Glean request already in progress…');
+    const requestSessionId = sessionId;
+    if (!requestSessionId) {
+      showToast('Select copy on the page first', 'error');
+      setStatus('Select copy on the page first');
       return;
     }
-    const epoch = ++gleanEpoch;
-    gleanActiveEpoch = epoch;
-    setStatus('Waiting on Glean…');
+    const pendingId = 'pending-' + Date.now();
+    const gleanBtn = panel && panel.querySelector('#vc-glean');
+    if (gleanBtn) gleanBtn.disabled = true;
+    viewedRequestId = pendingId;
+    liveRequests[pendingId] = { sessionId: requestSessionId, startedAt: Date.now() };
+    thinkingStartedAt = liveRequests[pendingId].startedAt;
     startThinkingClock();
+    renderVariants([]);
+    setAgentStatus('running', 'Agent running');
+    setPanelStep('thinking');
+    setPanelSurface('crank');
     showThinking({
-      stage: 'stream_wait',
-      text: 'Connecting to live agent stream…',
-      detail: 'Robot Content Designer · usually 1–2 min',
+      stage: 'snapshot',
+      text: 'Saving a snapshot of the selection…',
+      detail: 'The agent starts as soon as that finishes',
       live: false
     });
-    panel.querySelector('#vc-glean').disabled = true;
-    let progressPoll = null;
-    const pollProgress = async function () {
-      if (gleanActiveEpoch !== epoch || !sessionId) return;
-      try {
-        const resp = await fetch(
-          COMPANION_HTTP + '/api/glean-progress?sessionId=' + encodeURIComponent(sessionId),
-          { cache: 'no-store', headers: authHeaders() }
-        );
-        const data = await resp.json();
-        if (data.ok && data.progress && gleanActiveEpoch === epoch) {
-          showThinking(data.progress);
-        }
-      } catch (_) {}
-    };
-    progressPoll = setInterval(pollProgress, 1000);
-    pollProgress();
-    // HTTP await is source of truth; WS + poll carry live GLEAN_PROGRESS.
-    // Do not also send REQUEST_VARIANTS (would double-call Glean).
+    let selectionShots = null;
     try {
+      selectionShots = await captureSelectionShots();
+    } catch (_) {}
+    if (viewedRequestId === pendingId) {
+      showThinking({
+        stage: 'stream_wait',
+        text: 'Connecting to the agent…',
+        detail: 'Robot Content Designer · usually 1–2 min',
+        live: false
+      });
+    }
+    let responseId = '';
+    try {
+      const started = await postJson('/api/responses/start', {
+        sessionId: requestSessionId,
+        shots: selectionShots || undefined
+      });
+      responseId = started && started.id ? String(started.id) : '';
+    } catch (_) {}
+    const pending = liveRequests[pendingId];
+    delete liveRequests[pendingId];
+    if (responseId) {
+      liveRequests[responseId] = {
+        sessionId: requestSessionId,
+        startedAt: pending && pending.startedAt ? pending.startedAt : Date.now()
+      };
+      if (viewedRequestId === pendingId) viewedRequestId = responseId;
+    } else if (viewedRequestId === pendingId) {
+      viewedRequestId = pendingId;
+      liveRequests[pendingId] = pending || { sessionId: requestSessionId, startedAt: Date.now() };
+      setStatus('Could not save this request to history');
+    }
+    if (panel && panel.getAttribute('data-crank-view') === 'history') loadHistoryList();
+    const activeId = responseId || pendingId;
+    let progressPoll = null;
+    try {
+      const companionOk =
+        typeof window.__crankProbeCompanion === 'function'
+          ? await window.__crankProbeCompanion()
+          : window.__CRANK_COMPANION_ONLINE__ !== false;
+      if (!companionOk) {
+        showCompanionOfflineUI();
+        showToast('Companion offline — start it, then click Retry', 'error');
+        delete liveRequests[activeId];
+        if (responseId) {
+          postJson('/api/responses/' + encodeURIComponent(responseId) + '/expire', {
+            error: 'No response'
+          }).catch(function () {});
+        }
+        hideThinking();
+        setPanelStep('ask');
+        setStatus('No response');
+        return;
+      }
+      persistGleanContextFromPanel();
+      progressPoll = setInterval(async function () {
+        if (viewedRequestId !== activeId) return;
+        try {
+          const resp = await fetch(
+            COMPANION_HTTP + '/api/glean-progress?sessionId=' + encodeURIComponent(requestSessionId),
+            { cache: 'no-store', headers: authHeaders() }
+          );
+          const data = await resp.json();
+          if (data.ok && data.progress && viewedRequestId === activeId) {
+            showThinking(data.progress);
+          }
+        } catch (_) {}
+      }, 400);
+      const optionCount = getGleanOptionCount();
       const data = await postJson(
         '/api/variants',
         {
-          sessionId: sessionId,
-          optionCount: getGleanOptionCount(),
-          options: { optionCount: getGleanOptionCount() }
+          sessionId: requestSessionId,
+          responseId: responseId || undefined,
+          optionCount: optionCount,
+          shots: selectionShots || undefined,
+          gleanContext: gleanValidation.context,
+          options: {
+            optionCount: optionCount,
+            gleanContext: gleanValidation.context
+          }
         },
         { timeoutMs: GLEAN_VARIANTS_TIMEOUT_MS }
       );
-      if (gleanActiveEpoch !== epoch) return;
       if (!data.ok) throw new Error(data.error || 'Glean failed');
-      gleanActiveEpoch = 0;
-      hideThinking();
       const variants = data.variants || (data.session && data.session.variants) || [];
-      renderVariants(variants);
-      setStatus('Glean returned ' + variants.length + ' options');
+      delete liveRequests[activeId];
+      if (viewedRequestId === activeId) {
+        hideThinking();
+        renderVariants(variants);
+        setPanelStep(variants.length ? 'results' : 'ask');
+        setStatus(variants.length ? 'Glean returned ' + variants.length + ' options' : 'No response');
+      } else if (panel && panel.getAttribute('data-crank-view') === 'history') {
+        loadHistoryList();
+      }
     } catch (err) {
-      if (gleanActiveEpoch !== epoch) return;
-      gleanActiveEpoch = 0;
-      hideThinking();
-      setStatus('Glean error: ' + err.message);
+      delete liveRequests[activeId];
+      if (viewedRequestId === activeId) {
+        hideThinking();
+        setPanelStep('ask');
+        setStatus('Glean error: ' + err.message);
+      } else if (panel && panel.getAttribute('data-crank-view') === 'history') {
+        loadHistoryList();
+      }
     } finally {
       if (progressPoll) clearInterval(progressPoll);
-      if (gleanActiveEpoch === epoch) gleanActiveEpoch = 0;
-      panel.querySelector('#vc-glean').disabled = !sessionId;
+      const gleanBtn = panel && panel.querySelector('#vc-glean');
+      if (gleanBtn) gleanBtn.disabled = false;
     }
+  }
+
+  function pickerElement(event) {
+    const fromPoint = document.elementFromPoint(event.clientX, event.clientY);
+    const raw =
+      event.target && event.target.nodeType === 1
+        ? event.target
+        : fromPoint && fromPoint.nodeType === 3
+          ? fromPoint.parentElement
+          : fromPoint;
+    if (!(raw instanceof Element) || isCrankChrome(raw)) return null;
+    return raw;
   }
 
   function onMove(ev) {
     if (!selecting) return;
-    const el = document.elementFromPoint(ev.clientX, ev.clientY);
-    if (!el || isCrankChrome(el)) return;
-    const target = el.closest('div') || el;
+    const target = document.elementFromPoint(ev.clientX, ev.clientY);
+    if (!(target instanceof Element) || isCrankChrome(target)) return;
     const r = target.getBoundingClientRect();
     highlight.style.left = r.left + 'px';
     highlight.style.top = r.top + 'px';
@@ -3125,41 +6808,20 @@
 
   async function onClick(ev) {
     if (!selecting) return;
+    const target = pickerElement(ev);
+    if (!target) return;
     ev.preventDefault();
     ev.stopPropagation();
-    const el = document.elementFromPoint(ev.clientX, ev.clientY);
-    if (!el || isCrankChrome(el)) return;
-    const target = el.closest('div') || el;
     stopSelect();
+    layerFocus = target;
+    checkedLayers = [target];
     selectedEl = target;
-    selectedNodes = extractTextNodes(target);
-    originalSnapshot = selectedNodes.map(function (n) {
-      return Object.assign({}, n, {
-        text: n.text,
-        previousText: n.text,
-        originalText: n.originalText != null ? n.originalText : n.text
-      });
-    });
-    selectedNodes = selectedNodes.map(function (n) {
-      return Object.assign({}, n, {
-        originalText: n.originalText != null ? n.originalText : n.text
-      });
-    });
+    selectedNodes = stringsFromCheckedLayers();
+    snapshotSelectionNodes();
     openPanelAfterSelection();
     renderNodes();
-    const payload = {
-      origin: location.origin,
-      pageUrl: location.href,
-      selector: cssPath(target),
-      tagName: target.tagName.toLowerCase(),
-      nodes: selectedNodes,
-      combinedText: selectedNodes.map(function (n) {
-        return n.text;
-      }).join('\n'),
-      meta: {
-        pathHints: pathHintsFromLocation()
-      }
-    };
+    renderLayerList();
+    const payload = selectionPayloadFor(target);
     pendingSelectionPayload = payload;
     try {
       const authed = await ensureTeamToken();
@@ -3189,7 +6851,7 @@
     document.addEventListener('mousemove', onMove, true);
     document.addEventListener('click', onClick, true);
     document.addEventListener('keydown', onKey, true);
-    setStatus('Hover a layout, click to select · Esc cancels');
+    setStatus('Hover an element, click to select · Esc cancels');
   }
 
   function stopSelect() {
@@ -3228,8 +6890,10 @@
       socket = null;
     }
     if (highlight && highlight.parentNode) highlight.remove();
-    if (fab && fab.parentNode) fab.remove();
+    if (launcher && launcher.parentNode) launcher.remove();
+    launcher = null;
     fab = null;
+    toolbarOpen = false;
     if (teamAuthFab && teamAuthFab.parentNode) teamAuthFab.remove();
     teamAuthFab = null;
     if (selectHint && selectHint.parentNode) selectHint.remove();

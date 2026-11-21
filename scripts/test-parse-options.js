@@ -10,7 +10,8 @@ const assert = require('assert');
 const {
   parseOptionsFromText,
   formatDraft,
-  buildAgentInput
+  buildAgentInput,
+  variantsFromPartialStream
 } = require('../companion/glean-client.js');
 
 const classicMd = `
@@ -289,6 +290,44 @@ const inlineScoreMd = `
   const v2 = parseOptionsFromText(backslashMd, session)[0];
   assert.strictEqual(v2.nodes[0].text, 'Hello world');
   assert.ok(String(v2.nodes[0].text).indexOf('\\') === -1, 'copy must not retain trailing backslash');
+}
+
+{
+  const session = {
+    nodes: [
+      { path: '0', role: 'heading', text: 'Welcome' },
+      { path: '1', role: 'text', text: 'Body copy' },
+      { path: '2', role: 'action', text: 'Go' }
+    ]
+  };
+  const partial =
+    '{"cards":{"options":[' +
+    '{"string":"Heading: Keep the full headline\\nBody: This body is long enough that it must not be clipped in the card.\\nCTA: Continue"},' +
+    '{"string":"Heading: Still writing';
+  const variants = variantsFromPartialStream(partial, session, 5);
+  assert.strictEqual(variants.length, 1, 'partial stream keeps only the closed option');
+  assert.strictEqual(variants[0].nodes[0].text, 'Keep the full headline');
+  assert.ok(
+    variants[0].nodes[1].text.indexOf('must not be clipped') !== -1,
+    'full body is kept'
+  );
+  assert.strictEqual(variants[0].nodes[2].text, 'Continue');
+}
+
+{
+  const session = {
+    nodes: [
+      { path: '0', role: 'heading', text: 'Old heading' },
+      { path: '1', role: 'text', text: 'Old body' },
+      { path: '2', role: 'action', text: 'Old cta' }
+    ]
+  };
+  const paragraph =
+    '| **Option 1 ✅ Recommended** | CTA: Open the yard Heading: Routes stay moving Body: See late trucks before the first delivery. |';
+  const variant = parseOptionsFromText(paragraph, session)[0];
+  assert.strictEqual(variant.nodes[0].text, 'Routes stay moving');
+  assert.strictEqual(variant.nodes[1].text, 'See late trucks before the first delivery.');
+  assert.strictEqual(variant.nodes[2].text, 'Open the yard');
 }
 
 console.log('ok — parse options keep clean field labels (scores stripped)');

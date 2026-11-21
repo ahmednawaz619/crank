@@ -11,8 +11,8 @@
  * both block until the agent finishes. Stream only adds live progress UI.
  * Set GLEAN_USE_STREAM=false to force wait-only.
  *
- * Option count: CRANK_GLEAN_OPTION_COUNT (default 3). Fewer options may reduce
- * agent work slightly; most latency is inherent agent runtime (~1–2 min).
+ * Option count: CRANK_GLEAN_OPTION_COUNT (default 5). Copywriting agent often
+ * returns 5+ options; cap parse at 10. Most latency is inherent agent runtime (~1–2 min).
  */
 
 const fs = require('fs');
@@ -28,6 +28,12 @@ const {
   mergeVariantNodes,
   isExcludedGleanValue
 } = require('../lib/copy-dynamic');
+const {
+  buildFigmaStylePrompt,
+  normalizeGleanContext,
+  parseCopywritingAgentJson,
+  formatGradesForPanel
+} = require('../lib/figma-parity');
 
 const SKILLS_DIR = path.resolve(__dirname, '..', 'skills');
 /** Motive copywriting agent (same id as Figma “Crank Copy” plugin). */
@@ -41,8 +47,9 @@ const WAIT_HEARTBEAT_MS = Number(process.env.GLEAN_WAIT_HEARTBEAT_MS || 3500);
 const GLEAN_AGENT_TIMEOUT_MS = Number(
   process.env.GLEAN_AGENT_TIMEOUT_MS || 300000
 );
-/** Max copy options to parse/return (default 3; was 4, was 6). */
-const DEFAULT_OPTION_COUNT = envInt('GLEAN_OPTION_COUNT', 3);
+/** Max copy options to parse/return (default 5 — Figma copywriting agent parity). */
+const DEFAULT_OPTION_COUNT = envInt('GLEAN_OPTION_COUNT', 5);
+const MAX_OPTION_PARSE = 10;
 
 function extractAiDelta(payload) {
   if (!payload || typeof payload !== 'object') return '';
@@ -237,21 +244,52 @@ function formatDraft(session) {
 }
 
 function draftLabelHint(session) {
+  const labels = sentStringLabels(session);
+  if (!labels.length) return 'Copy 1:';
+  return labels.join(', ');
+}
+
+function sentStringLines(text) {
+  return String(text || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function labelFromDraftLine(line, index) {
+  const match = String(line || '').match(/^([^:\n]{1,48}):\s+\S/);
+  if (match) return match[1].trim();
+  return 'Copy ' + (index + 1);
+}
+
+function sentStringLabels(session, humanStrings) {
+  const lines = sentStringLines(humanStrings || formatDraft(session));
+  if (lines.length) {
+    return lines.map(labelFromDraftLine);
+  }
   const allNodes = assignUnitLabels(
-    Array.isArray(session.nodes) ? session.nodes : []
+    Array.isArray(session && session.nodes) ? session.nodes : []
   );
   const nodes = gleanEligibleNodes(allNodes);
-  if (!nodes.length) return 'Copy 1:';
-  if (hasSemanticStructure(allNodes)) {
-    const labels = nodes.map(
-      (n) =>
-        n.label ||
-        unitDraftLabel(n, n._sessionIndex != null ? n._sessionIndex : 0, allNodes)
-    );
-    return labels.join(', ');
-  }
-  if (nodes.length === 1) return 'Copy 1:';
-  return 'Copy 1:, Copy 2:, … (same count as draft)';
+  return nodes.map(
+    (node, index) =>
+      node.label ||
+      unitDraftLabel(node, node._sessionIndex != null ? node._sessionIndex : index, allNodes)
+  );
+}
+
+function rewriteAllStringsNote(labels) {
+  const list = labels.length ? labels : ['Copy 1'];
+  const count = list.length;
+  return (
+    'The draft has ' +
+    count +
+    ' string' +
+    (count === 1 ? '' : 's') +
+    '. Rewrite every one of them in every option, using these labels in this order: ' +
+    list.join(', ') +
+    '. Do not rewrite only the first string. Do not omit a string. Do not return the original wording for any of them.'
+  );
 }
 
 function agentUsesFormInput(agentId) {
@@ -263,29 +301,42 @@ function agentUsesFormInput(agentId) {
   return String(agentId) === LEGACY_FORM_AGENT_ID;
 }
 
-function buildCopywritingUserPrompt(session, options = {}, optionCount) {
+function resolvedGleanContext(session, options = {}) {
   const draft =
     formatDraft(session) ||
     String(session?.combinedText || '').trim().slice(0, 1500);
-  const source = String(process.env.GLEAN_AGENT_SOURCE || 'crank-companion').trim();
-  const component = options.componentType || 'General UI string';
-  const labelHint = draftLabelHint(session);
-  return `Source: ${source}
+  const rawCtx =
+    options.gleanContext && typeof options.gleanContext === 'object'
+      ? options.gleanContext
+      : {};
+  const ctx = normalizeGleanContext(
+    {
+      ...rawCtx,
+      humanStrings: String(rawCtx.humanStrings || '').trim() || draft,
+      componentType: rawCtx.componentType || options.componentType,
+      timing: rawCtx.timing || options.timing,
+      userType: rawCtx.userType || options.userType
+    },
+    session
+  );
+  return { ctx, draft };
+}
 
-1. Human-written string:
-${draft || '(none)'}
-
-2. Component type: ${component}
-3. Timing: Before user action
-4. Functional requirements:
-   - Fleet user or driver: Fleet user
-   - How did they get to this screen: Live product UI (Crank selection)
-   - What is the user trying to do: Rewrite the human-written string(s) for clarity and tone
-   - What happens next: Not provided
-   - What are the action options for the user: Not provided
-   - What do the other existing strings around the component say: Not provided
-   - PRD/PDP link: Not provided
-   - Additional context: Return at least ${optionCount} copy alternatives. Label fields like the draft (${labelHint}). Include your markdown options table (Option N rows) for tooling.`;
+function buildCopywritingUserPrompt(session, options = {}, optionCount) {
+  const { ctx } = resolvedGleanContext(session, options);
+  const labels = sentStringLabels(session, ctx.humanStrings);
+  let prompt = buildFigmaStylePrompt(ctx, {
+    source: process.env.GLEAN_AGENT_SOURCE
+  });
+  if (optionCount) {
+    prompt +=
+      '\n\nTooling note: ' +
+      rewriteAllStringsNote(labels) +
+      ' Return JSON with cards.options. Put each option’s full copy in options[].string and do not shorten it. No preamble. Stop after ' +
+      optionCount +
+      ' options.';
+  }
+  return prompt;
 }
 
 /**
@@ -329,66 +380,140 @@ function unescapeLiteralNewlines(text) {
 
 /** Pull markdown table from copywriting agent JSON ({ table, cards }). */
 function extractMarkdownTableFromAgentJson(rawText) {
-  let jsonText = String(rawText || '').trim();
-  if (!jsonText) return '';
-  const fenced =
-    jsonText.match(/```json\s*([\s\S]*?)\s*```/) ||
-    jsonText.match(/```\s*([\s\S]*?)\s*```/);
-  if (fenced) jsonText = fenced[1];
-  const start = jsonText.indexOf('{');
-  const end = jsonText.lastIndexOf('}');
-  const candidates = [jsonText];
-  if (start !== -1 && end > start) {
-    candidates.push(jsonText.slice(start, end + 1));
+  const parsed = parseCopywritingAgentJson(rawText);
+  return parsed.table || '';
+}
+
+function optionParseCap(maxOptions) {
+  return Math.min(
+    Math.max(Number(maxOptions) || DEFAULT_OPTION_COUNT, 2),
+    MAX_OPTION_PARSE
+  );
+}
+
+/**
+ * Map copywriting agent cards.options[] onto session copy units (Figma JSON schema).
+ */
+function mapCardOptionsToVariants(parsed, session, maxOptions) {
+  const cap = optionParseCap(maxOptions);
+  const options =
+    parsed && parsed.cards && Array.isArray(parsed.cards.options)
+      ? parsed.cards.options
+      : [];
+  if (!options.length) return [];
+
+  const allNodes = assignUnitLabels(
+    Array.isArray(session.nodes) ? session.nodes : []
+  );
+  const nodes = gleanEligibleNodes(allNodes);
+  const variants = [];
+
+  for (let i = 0; i < options.length && variants.length < cap; i++) {
+    const option = options[i] || {};
+    const block = String(option.string || '').trim();
+    if (!block) continue;
+
+    const headerMeta = option.isHumanWritten
+      ? 'human-written original'
+      : `Option ${variants.length + 1}`;
+    const labeled = parseLabeledCopyFields(block);
+    if (!labeled.length) continue;
+
+    const fields = fieldsFromLabeled(labeled);
+    const mappedEligible = mapOptionFieldsToNodes(nodes, fields, labeled);
+    const mapped = mergeVariantNodes(allNodes, mappedEligible);
+    if (isOriginalVariant(headerMeta, mappedEligible, nodes)) continue;
+
+    const rationales = labeled
+      .map((f) => extractFieldRationale(f.rawText || f.text))
+      .filter(Boolean);
+    const summaryParts = mappedEligible
+      .map((n) => cleanCopyField(n.text))
+      .filter(Boolean);
+
+    const gradesNote = formatGradesForPanel(option.grades);
+    const variant = {
+      id: `glean-option-${variants.length + 1}`,
+      label: option.isHumanWritten
+        ? `Option ${variants.length + 1} (original)`
+        : option.recommended
+          ? `Option ${variants.length + 1} (recommended)`
+          : `Option ${variants.length + 1}`,
+      summary: summaryParts.join(' · ').slice(0, 240),
+      fields,
+      nodes: mapped,
+      recommended: !!option.recommended,
+      isHumanWritten: option.isHumanWritten === true
+    };
+    const feedback = [gradesNote, ...rationales].filter(Boolean).join(' · ').trim();
+    if (feedback) variant.scores = feedback;
+    variants.push(variant);
   }
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (typeof parsed.table === 'string' && parsed.table.trim()) {
-        return unescapeLiteralNewlines(parsed.table).trim();
-      }
-    } catch {
-      // try next candidate
-    }
-  }
-  return '';
+
+  return variants.slice(0, cap);
 }
 
 function parseOptionsFromAgentText(text, session, maxOptions) {
-  const table = extractMarkdownTableFromAgentJson(text);
-  if (table) {
-    const fromTable = parseOptionsFromText(table, session, maxOptions);
+  const cap = optionParseCap(maxOptions);
+  const parsed = parseCopywritingAgentJson(text);
+  if (parsed.table) {
+    const fromTable = parseOptionsFromText(parsed.table, session, cap);
     if (fromTable.length && fromTable[0].id !== 'glean-raw') {
       return fromTable;
     }
   }
-  return parseOptionsFromText(text, session, maxOptions);
+  const fromCards = mapCardOptionsToVariants(parsed, session, cap);
+  if (fromCards.length) return fromCards;
+
+  const table = extractMarkdownTableFromAgentJson(text);
+  if (table) {
+    const fromTable = parseOptionsFromText(table, session, cap);
+    if (fromTable.length && fromTable[0].id !== 'glean-raw') {
+      return fromTable;
+    }
+  }
+  return parseOptionsFromText(text, session, cap);
 }
 
 function buildAgentInput(session, options = {}) {
-  const draft = formatDraft(session);
+  const { ctx, draft } = resolvedGleanContext(session, options);
+  const humanDraft = ctx.humanStrings || draft;
   const optionCount = Math.min(
     Math.max(
       Number(options.optionCount || options.variantCount || DEFAULT_OPTION_COUNT) ||
         DEFAULT_OPTION_COUNT,
       2
     ),
-    6
+    MAX_OPTION_PARSE
   );
   // Short feature blurb — long strings → HTTP 400. Ask for copy-only output (no rubric).
-  const labelHint = draftLabelHint(session);
+  const labels = sentStringLabels(session, humanDraft);
   const feature =
     options.feature ||
-    (draft
-      ? `Return exactly ${optionCount} new rewritten alternatives only — do not include the original draft as an option. Label fields like the draft (${labelHint}). Each field value must be UI copy only — no inline scores (Strong/Weak/Good), no rationale about the draft, no pipe rubric columns. Table only. No questions.`
+    (humanDraft
+      ? `Return exactly ${optionCount} new rewritten alternatives only — do not include the original draft as an option. ${rewriteAllStringsNote(labels)} Each field value must be UI copy only — no inline scores (Strong/Weak/Good), no rationale about the draft, no pipe rubric columns. Table only. No questions.`
       : `Return exactly ${optionCount} new UI copy alternatives only (not the original draft). No clarifying questions.`);
+  const answers = [
+    ctx.entryPoint ? `Entry: ${ctx.entryPoint}` : '',
+    ctx.userGoal ? `Goal: ${ctx.userGoal}` : '',
+    ctx.nextStep ? `Next: ${ctx.nextStep}` : '',
+    ctx.actionOptions ? `Actions: ${ctx.actionOptions}` : '',
+    ctx.surroundingStrings ? `Nearby: ${ctx.surroundingStrings}` : '',
+    ctx.prdLink ? `PRD: ${ctx.prdLink}` : '',
+    ctx.additionalContext ? `Notes: ${ctx.additionalContext}` : ''
+  ].filter(Boolean);
 
   return {
-    'Enter in a human-written draft': draft,
-    'Explain the functionality of the feature': String(feature).slice(0, 220),
-    'Proactive or reactive': options.proactiveOrReactive || 'Proactive',
+    'Enter in a human-written draft': humanDraft,
+    'Explain the functionality of the feature': String(
+      answers.length ? `${feature} ${answers.join(' | ')}` : feature
+    ).slice(0, 220),
+    'Proactive or reactive':
+      ctx.timing === 'After'
+        ? 'Reactive'
+        : options.proactiveOrReactive || 'Proactive',
     // Must be from agent vocabulary (e.g. General UI string) — not "Hero / landing card"
-    'Type of component': options.componentType || 'General UI string',
+    'Type of component': ctx.componentType || 'General UI string',
     'What is the difficulty of the user experience':
       options.uxDifficulty || 'Easy',
     _crankOptionCount: optionCount
@@ -537,7 +662,7 @@ function extractFieldRationale(value) {
   if (!raw || !META_RATIONALE_RE.test(raw)) return '';
   const cleaned = cleanCopyField(raw);
   if (normalizeWs(cleaned) === normalizeWs(raw)) return '';
-  return trimTableCell(stripInlineScorePrefix(raw)).slice(0, 400);
+  return trimTableCell(stripInlineScorePrefix(raw));
 }
 
 /**
@@ -700,19 +825,44 @@ function isOriginalVariant(headerMeta, mapped, nodes) {
  * Map Glean labeled fields onto selection nodes in order — skip junk values
  * without shifting (Copy 1: "/" must not push Copy 2 onto session node 2).
  */
+function normLabel(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 function mapLabeledFieldsToNodes(mapped, labeled) {
   if (!Array.isArray(labeled) || !labeled.length || !mapped.length) {
     return mapped;
   }
 
-  let nodeIdx = 0;
-  for (const f of labeled) {
-    const value = cleanCopyField(f.text);
+  const used = new Set();
+  const pending = [];
+  for (const field of labeled) {
+    const value = cleanCopyField(field.text);
     if (!value || isExcludedGleanValue(value)) continue;
-    if (nodeIdx >= mapped.length) break;
-    mapped[nodeIdx].text = value;
-    mapped[nodeIdx].copyLabel = f.rawLabel || f.label || `Copy ${nodeIdx + 1}`;
-    nodeIdx += 1;
+    const want = normLabel(field.rawLabel || field.label);
+    const idx = mapped.findIndex(
+      (node, index) => !used.has(index) && want && normLabel(node.label) === want
+    );
+    if (idx >= 0) {
+      mapped[idx].text = value;
+      mapped[idx].copyLabel = field.rawLabel || field.label || mapped[idx].label;
+      used.add(idx);
+    } else {
+      pending.push(field);
+    }
+  }
+
+  for (const field of pending) {
+    const value = cleanCopyField(field.text);
+    if (!value || isExcludedGleanValue(value)) continue;
+    const idx = mapped.findIndex((_, index) => !used.has(index));
+    if (idx < 0) break;
+    mapped[idx].text = value;
+    mapped[idx].copyLabel = field.rawLabel || field.label || 'Copy ' + (idx + 1);
+    used.add(idx);
   }
 
   return mapped;
@@ -805,7 +955,7 @@ function mapOptionFieldsToNodes(nodes, fields = {}, labeled = null) {
  *   **Option 2 (AI-written) ✅ Recommended**<br>Heading: …<br>Body 1: …<br>Body 2: …
  */
 function parseOptionsFromText(text, session, maxOptions = DEFAULT_OPTION_COUNT) {
-  const cap = Math.min(Math.max(Number(maxOptions) || DEFAULT_OPTION_COUNT, 2), 6);
+  const cap = optionParseCap(maxOptions);
   const allNodes = assignUnitLabels(
     Array.isArray(session.nodes) ? session.nodes : []
   );
@@ -860,7 +1010,7 @@ function parseOptionsFromText(text, session, maxOptions = DEFAULT_OPTION_COUNT) 
       recommended
     };
     const feedback = [scores, ...rationales].filter(Boolean).join(' · ').trim();
-    if (feedback) variant.scores = feedback.slice(0, 400);
+    if (feedback) variant.scores = feedback;
     variants.push(variant);
   }
 
@@ -919,11 +1069,86 @@ function makeEmitter(onProgress) {
 }
 
 /**
+ * Pull closed JSON objects from an array that starts at fromIndex.
+ * Stops at the first object that is still being written.
+ */
+function extractBalancedObjects(text, fromIndex) {
+  const objects = [];
+  let i = fromIndex;
+  while (i < text.length) {
+    while (i < text.length && /[\s,]/.test(text[i])) i += 1;
+    if (i >= text.length || text[i] === ']') break;
+    if (text[i] !== '{') break;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let j = i;
+    let closed = false;
+    for (; j < text.length; j += 1) {
+      const c = text[j];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === '{') depth += 1;
+      else if (c === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          j += 1;
+          closed = true;
+          break;
+        }
+      }
+    }
+    if (!closed) break;
+    try {
+      objects.push(JSON.parse(text.slice(i, j)));
+    } catch {
+      break;
+    }
+    i = j;
+  }
+  return objects;
+}
+
+/**
+ * Options that are already complete in a partial agent stream.
+ * Incomplete trailing text is left out so the panel can render finished cards early.
+ */
+function variantsFromPartialStream(text, session, maxOptions) {
+  const raw = String(text || '');
+  const key = raw.search(/"options"\s*:/);
+  if (key !== -1) {
+    const bracket = raw.indexOf('[', key);
+    if (bracket !== -1) {
+      const objects = extractBalancedObjects(raw, bracket + 1);
+      if (objects.length) {
+        const fromCards = mapCardOptionsToVariants(
+          { cards: { options: objects } },
+          session,
+          maxOptions
+        );
+        if (fromCards.length) return fromCards;
+      }
+    }
+  }
+  if (raw.includes('|')) {
+    const fromTable = parseOptionsFromText(raw, session, maxOptions);
+    if (fromTable.length && fromTable[0].id !== 'glean-raw') return fromTable;
+  }
+  return [];
+}
+
+/**
  * Try SSE stream to completion. Rejects if no first byte within
  * STREAM_FIRST_BYTE_MS, or if the stream ends empty.
  * Emits silent-phase heartbeats, then live GLEAN_AI token text.
+ * Closes the stream once the requested number of options is complete.
  */
-async function tryStreamAgent(body, emit) {
+async function tryStreamAgent(body, emit, parseContext) {
   const ac = new AbortController();
   const streamUrl = `${baseUrl()}/rest/api/v1/agents/runs/stream`;
   const started = Date.now();
@@ -938,6 +1163,7 @@ async function tryStreamAgent(body, emit) {
 
   let heartbeat = null;
   let gotAiTokens = false;
+  let bestVariants = [];
 
   const emitSilentProgress = () => {
     if (gotAiTokens) return;
@@ -973,6 +1199,32 @@ async function tryStreamAgent(body, emit) {
     let lastEvent = '';
     let gotByte = false;
     let eventCount = 0;
+    let stoppedEarly = false;
+    const session = parseContext && parseContext.session;
+    const optionCount = Number(parseContext && parseContext.optionCount) || 0;
+
+    const publishLive = (eventName) => {
+      gotAiTokens = true;
+      if (session) {
+        const found = variantsFromPartialStream(
+          assembled,
+          session,
+          optionCount || undefined
+        );
+        if (found.length) bestVariants = found;
+      }
+      const ready = bestVariants.length;
+      emit({
+        stage: ready ? 'writing' : eventName || 'thinking',
+        text: ready
+          ? 'Writing option ' + ready + (optionCount ? ' of ' + optionCount : '') + '…'
+          : 'Writing options…',
+        variants: ready ? bestVariants : undefined,
+        streamChars: assembled.length,
+        live: true
+      });
+      return ready > 0 && optionCount > 0 && ready >= optionCount;
+    };
 
     heartbeat = setInterval(emitSilentProgress, WAIT_HEARTBEAT_MS);
 
@@ -1014,19 +1266,9 @@ async function tryStreamAgent(body, emit) {
           // Non-JSON SSE data — treat as raw text delta.
           if (raw.trim()) {
             assembled += raw;
-            gotAiTokens = true;
-            emit({
-              stage: eventName || 'thinking',
-              text: 'Streaming agent output…',
-              partial: assembled.slice(-6000),
-              latestThought: extractLatestThought(
-                assembled,
-                'Generating copy…'
-              ),
-              streamChars: assembled.length,
-              live: true
-            });
+            if (publishLive(eventName)) stoppedEarly = true;
           }
+          if (stoppedEarly) break;
           continue;
         }
 
@@ -1044,18 +1286,7 @@ async function tryStreamAgent(body, emit) {
           } else {
             assembled += chunkText;
           }
-          gotAiTokens = true;
-          emit({
-            stage: eventName || 'thinking',
-            text: 'Streaming agent output…',
-            partial: assembled.slice(-6000),
-            latestThought: extractLatestThought(
-              assembled,
-              'Generating copy…'
-            ),
-            streamChars: assembled.length,
-            live: true
-          });
+          if (publishLive(eventName)) stoppedEarly = true;
         } else if (payload.status || payload.stage || payload.type) {
           const statusText = String(
             payload.message || payload.detail || payload.status || 'Working…'
@@ -1068,18 +1299,28 @@ async function tryStreamAgent(body, emit) {
             live: !!assembled
           });
         }
+        if (stoppedEarly) break;
+      }
+      if (stoppedEarly) {
+        try {
+          await reader.cancel();
+        } catch (_) {}
+        break;
       }
     }
 
-    if (!assembled.trim()) {
+    if (!assembled.trim() && !bestVariants.length) {
       throw new Error(
         `Empty stream response (events=${eventCount}, bytes_seen=${gotByte})`
       );
     }
     console.log(
-      `[Crank] Glean stream done: ${eventCount} events, ${assembled.length} chars, ${Math.round((Date.now() - started) / 1000)}s`
+      `[Crank] Glean stream ${stoppedEarly ? 'stopped early' : 'done'}: ${eventCount} events, ${assembled.length} chars, ${bestVariants.length} options, ${Math.round((Date.now() - started) / 1000)}s`
     );
-    return assembled;
+    return { text: assembled, variants: bestVariants };
+  } catch (err) {
+    if (bestVariants.length && err) err.partialVariants = bestVariants;
+    throw err;
   } finally {
     clearTimeout(firstByteTimer);
     clearTimeout(overallTimer);
@@ -1157,7 +1398,7 @@ async function proposeCopyVariants(session, options = {}, onProgress) {
         DEFAULT_OPTION_COUNT,
       2
     ),
-    6
+    MAX_OPTION_PARSE
   );
 
   if (stub || !process.env.GLEAN_API_KEY) {
@@ -1201,16 +1442,29 @@ async function proposeCopyVariants(session, options = {}, onProgress) {
         latestThought: 'Connecting to live agent stream…',
         live: false
       });
-      const streamed = await tryStreamAgent(body, emit);
+      const streamed = await tryStreamAgent(body, emit, { session, optionCount });
+      const streamedText = streamed && streamed.text ? streamed.text : '';
+      const streamedVariants =
+        streamed && Array.isArray(streamed.variants) ? streamed.variants : [];
       emit({
         stage: 'done',
         text: 'Parsing streamed copy options…',
-        partial: streamed.slice(0, 2000),
+        variants: streamedVariants.length ? streamedVariants : undefined,
         latestThought: 'Parsing streamed copy options…',
         live: true
       });
-      return parseOptionsFromAgentText(streamed, session, optionCount);
+      const parsed = parseOptionsFromAgentText(streamedText, session, optionCount);
+      if (parsed.length && parsed[0].id !== 'glean-raw') return parsed;
+      if (streamedVariants.length) return streamedVariants;
+      return parsed;
     } catch (streamErr) {
+      if (
+        streamErr &&
+        Array.isArray(streamErr.partialVariants) &&
+        streamErr.partialVariants.length
+      ) {
+        return streamErr.partialVariants;
+      }
       emit({
         stage: 'fallback',
         text: 'Live stream failed — switching to /runs/wait…',
@@ -1259,5 +1513,8 @@ module.exports = {
   agentUsesFormInput,
   buildAgentRunBody,
   parseOptionsFromAgentText,
-  extractMarkdownTableFromAgentJson
+  variantsFromPartialStream,
+  extractMarkdownTableFromAgentJson,
+  mapCardOptionsToVariants,
+  optionParseCap
 };
