@@ -50,7 +50,7 @@ flowchart LR
 ### Flow
 
 1. **Select** — Bookmarklet hover/click picks a `div`, extracts text nodes (`path`, `role`, `text`), posts to companion `/api/selection`.
-2. **Propose** — Companion calls Glean (`glean-client.js`) with selection context. Stub returns deterministic variants when `GLEAN_STUB=true` (count = `CRANK_GLEAN_OPTION_COUNT`, default 3).
+2. **Propose** — Companion calls Glean (`glean-client.js`) with Figma-style context from the panel (same functional-requirements questions as the Figma Crank Copy plugin). Stub returns deterministic variants when `GLEAN_STUB=true` (count = `CRANK_GLEAN_OPTION_COUNT`, default 5).
 3. **Review** — Variants appear in the bookmarklet panel and/or via MCP tool `propose_copy_variants`.
 4. **Apply** — Panel **Apply** (or MCP `apply_copy_variant`) updates live DOM **and** persists editable hardcoded literals via the bundled Crank `text-writer`. **Preview** is DOM-only.
 5. **Agent handoff (same chat)** — Panel **Agent** queues structured pending changes for MCP pull and copies a short phrase (`Apply the pending Crank change`) to the clipboard. Paste that phrase in your **current** Cursor chat (or keep an agent session that already has the `crank-apply-changes` skill). The agent calls `crank_get_formatted_changes` → edits source → `crank_clear_changes`. Optional secondary: **Open new chat instead** uses a `cursor://…/prompt` deeplink (opens a *new* prefilled chat — not the same Composer).
@@ -206,10 +206,10 @@ Env vars (see `.env.example`; secrets live in `.env`, gitignored):
 | `GLEAN_API_KEY` | Client API bearer token |
 | `GLEAN_AGENT_ID` | Agent Builder id (default = copywriting agent / Figma parity) |
 | `GLEAN_AGENT_USE_FORM_INPUT` | `true` = form `input` (legacy Robot Content Designer); auto-detected from agent id |
-| `GLEAN_AGENT_SOURCE` | `Source:` line for copywriting prompt (default `crank-companion`) |
+| `GLEAN_AGENT_SOURCE` | `Source:` line for copywriting prompt (default `figma-plugin` via `lib/figma-parity.js`) |
 | `GLEAN_ACT_AS` | Optional; required for global tokens |
 | `GLEAN_STUB` | `true` = local stub variants; `false` = live agent |
-| `CRANK_GLEAN_OPTION_COUNT` | Max options to request/parse (default **3**; was 4, was 6) |
+| `CRANK_GLEAN_OPTION_COUNT` | Max options to request/parse (default **5**; parse cap 10 for copywriting JSON/table) |
 | `GLEAN_USE_STREAM` | `true` = live SSE progress (same latency as `/runs/wait`) |
 | `GLEAN_AGENT_TIMEOUT_MS` | Overall cap (default 5 min) |
 

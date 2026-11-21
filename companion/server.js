@@ -17,8 +17,12 @@ const express = require('express');
 const cors = require('cors');
 const WebSocket = require('ws');
 
+const crypto = require('crypto');
+const responseLog = require('./response-log');
+const { captureScreenPng } = require('./screen-shot');
 const store = require('./selection-store');
 const { proposeCopyVariants } = require('./glean-client');
+const { validateGleanContext } = require('../lib/figma-parity');
 const { crankAsset } = require('./asset-bridge');
 const { saveTextChange, writeTextChangeAvailable } = require('./text-dispatch');
 const { persistAppliedVariant } = require('./persist-apply');
@@ -152,6 +156,21 @@ app.use((req, res, next) => {
     return;
   }
   teamAuthMiddleware(req, res, next);
+});
+
+app.get('/shots/:file', (req, res) => {
+  const name = path.basename(String(req.params.file || ''));
+  if (!/^[a-f0-9]{16}\.png$/.test(name)) {
+    res.status(404).end();
+    return;
+  }
+  const file = path.join(PROJECT_ROOT, '.crank', 'shots', name);
+  if (!fs.existsSync(file)) {
+    res.status(404).end();
+    return;
+  }
+  res.type('png');
+  res.sendFile(file);
 });
 
 /** @type {Set<import('ws').WebSocket>} */
@@ -536,6 +555,107 @@ app.get('/api/glean-progress', (req, res) => {
 
 /** @type {Set<string>} session ids with an in-flight Glean propose */
 const variantsInFlight = new Set();
+const activeResponseIds = new Set();
+
+/** Past Glean searches on this machine. */
+app.get('/api/responses', (_req, res) => {
+  try {
+    responseLog.settleStaleRuns(PROJECT_ROOT, activeResponseIds);
+    res.json({ ok: true, runs: responseLog.listResponses(PROJECT_ROOT) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/api/responses/:id', (req, res) => {
+  try {
+    responseLog.settleStaleRuns(PROJECT_ROOT, activeResponseIds);
+    const run = responseLog.getResponse(PROJECT_ROOT, req.params.id);
+    if (!run) {
+      res.status(404).json({ ok: false, error: 'Response not found' });
+      return;
+    }
+    res.json({ ok: true, run });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/responses/:id/expire', (req, res) => {
+  try {
+    const run = responseLog.expireResponse(
+      PROJECT_ROOT,
+      req.params.id,
+      req.body?.error || 'No response'
+    );
+    if (!run) {
+      res.status(404).json({ ok: false, error: 'Response not found' });
+      return;
+    }
+    res.json({ ok: true, run });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.delete('/api/responses/:id', (req, res) => {
+  try {
+    const removed = responseLog.deleteResponse(PROJECT_ROOT, req.params.id);
+    if (!removed) {
+      res.status(404).json({ ok: false, error: 'Response not found' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/screenshot', async (req, res) => {
+  try {
+    if (req.body && req.body.locate) {
+      const found = await captureScreenPng(req.body);
+      res.json({ ok: true, x: found.x, y: found.y, scale: found.scale });
+      return;
+    }
+    const png = await captureScreenPng(req.body || {});
+    const id = crypto.randomBytes(8).toString('hex');
+    const dir = path.join(PROJECT_ROOT, '.crank', 'shots');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, id + '.png'), png);
+    res.json({ ok: true, path: '/shots/' + id + '.png' });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/responses/start', (req, res) => {
+  try {
+    const session = store.getSession(req.body?.sessionId);
+    if (!session) {
+      res.status(404).json({ ok: false, error: 'No active selection' });
+      return;
+    }
+    const run = responseLog.beginResponse(PROJECT_ROOT, session, req.body?.shots);
+    res.json({ ok: true, id: run.id, status: 'running' });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/** Saved Glean responses for this selection, including after a refresh. */
+app.post('/api/responses/match', (req, res) => {
+  try {
+    const run = responseLog.findResponse(
+      PROJECT_ROOT,
+      req.body?.pageUrl || '',
+      req.body?.nodes || []
+    );
+    res.json({ ok: true, run: run || null });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 /** Ask Glean for 3–4 copy variants (waits; also broadcasts progress on WS) */
 app.post('/api/variants', async (req, res) => {
@@ -549,6 +669,8 @@ app.post('/api/variants', async (req, res) => {
   }
 
   let lockId = null;
+  const responseId = req.body?.responseId ? String(req.body.responseId) : '';
+  if (responseId) activeResponseIds.add(responseId);
   try {
     const sessionId = req.body?.sessionId;
     const session = store.getSession(sessionId);
@@ -556,20 +678,47 @@ app.post('/api/variants', async (req, res) => {
       res.status(404).json({ ok: false, error: 'No active selection' });
       return;
     }
-    if (variantsInFlight.has(session.id)) {
-      res.status(409).json({
-        ok: false,
-        error: 'Glean variants already in progress for this selection'
-      });
-      return;
-    }
-    lockId = session.id;
-    variantsInFlight.add(lockId);
     console.log(`[Crank] Glean variants requested for session ${session.id}`);
+    const gleanContext =
+      req.body?.gleanContext ?? req.body?.options?.gleanContext;
+    let contextForAgent = gleanContext;
+    if (gleanContext) {
+      const { formatDraft } = require('./glean-client');
+      const check = validateGleanContext({
+        ...gleanContext,
+        humanStrings:
+          String(gleanContext.humanStrings || '').trim() ||
+          formatDraft(session) ||
+          ''
+      });
+      if (!check.ok) {
+        variantsInFlight.delete(lockId);
+        try {
+          if (req.body?.responseId) {
+            responseLog.failResponse(
+              PROJECT_ROOT,
+              req.body.responseId,
+              check.errors[0] || 'Complete Glean context'
+            );
+          }
+        } catch (logErr) {
+          console.error('[Crank] response log failed:', logErr.message);
+        }
+        res.status(400).json({
+          ok: false,
+          error: check.errors[0] || 'Complete Glean context',
+          validationErrors: check.errors,
+          fieldErrors: check.fieldErrors
+        });
+        return;
+      }
+      contextForAgent = check.context;
+    }
     const variants = await proposeCopyVariants(
       session,
       {
         ...(req.body?.options || {}),
+        gleanContext: contextForAgent,
         optionCount: req.body?.optionCount ?? req.body?.options?.optionCount
       },
       (progress) => {
@@ -582,6 +731,15 @@ app.post('/api/variants', async (req, res) => {
       }
     );
     const updated = store.setVariants(session.id, variants);
+    try {
+      if (req.body?.responseId) {
+        responseLog.completeResponse(PROJECT_ROOT, req.body.responseId, variants);
+      } else {
+        responseLog.recordResponse(PROJECT_ROOT, session, variants, req.body?.shots);
+      }
+    } catch (logErr) {
+      console.error('[Crank] response log failed:', logErr.message);
+    }
     console.log(
       `[Crank] Glean returned ${variants.length} variant(s) for ${session.id}`
     );
@@ -594,6 +752,13 @@ app.post('/api/variants', async (req, res) => {
     }
   } catch (err) {
     console.error('[Crank] Glean propose failed:', err.message);
+    try {
+      if (req.body?.responseId) {
+        responseLog.failResponse(PROJECT_ROOT, req.body.responseId, err.message);
+      }
+    } catch (logErr) {
+      console.error('[Crank] response log failed:', logErr.message);
+    }
     broadcast({
       type: 'GLEAN_ERROR',
       error: err.message
@@ -603,6 +768,7 @@ app.post('/api/variants', async (req, res) => {
     }
   } finally {
     if (lockId) variantsInFlight.delete(lockId);
+    if (responseId) activeResponseIds.delete(responseId);
   }
 });
 
@@ -682,9 +848,22 @@ app.post('/api/preview-variant', (req, res) => {
 /** Compact copy prompt for panel Copy button (clipboard only; does not enqueue). */
 app.post('/api/copy-prompt', (req, res) => {
   try {
-    const { sessionId, variantId, nodes, label } = req.body || {};
-    const session = store.getSession(sessionId);
-    if (!session) {
+    const body = req.body || {};
+    const { sessionId, variantId, nodes, label } = body;
+    const stored = sessionId ? store.getSession(sessionId) : null;
+    const session =
+      stored || {
+        pageUrl: body.pageUrl || '',
+        selector: body.selector || '',
+        nodes: Array.isArray(body.sourceNodes) ? body.sourceNodes : [],
+        variants: []
+      };
+    if (
+      !stored &&
+      !session.nodes.length &&
+      !(Array.isArray(nodes) && nodes.length) &&
+      !body.variant
+    ) {
       res.status(404).json({ ok: false, error: 'No active selection' });
       return;
     }
@@ -702,7 +881,11 @@ app.post('/api/copy-prompt', (req, res) => {
       });
       return;
     }
-    const variant = (session.variants || []).find((v) => v.id === variantId);
+    const variant =
+      (stored?.variants || []).find((v) => v.id === variantId) ||
+      (body.variant && (!variantId || body.variant.id === variantId)
+        ? body.variant
+        : null);
     if (!variant) {
       res.status(404).json({ ok: false, error: `Unknown variant: ${variantId}` });
       return;
@@ -1110,6 +1293,11 @@ wss.on('connection', (socket, req) => {
             }
           );
           const updated = store.setVariants(session.id, variants);
+          try {
+            responseLog.recordResponse(PROJECT_ROOT, session, variants);
+          } catch (logErr) {
+            console.error('[Crank] response log failed:', logErr.message);
+          }
           broadcast({ type: 'VARIANTS_READY', session: updated });
         } catch (err) {
           broadcast({ type: 'GLEAN_ERROR', error: err.message });
@@ -1310,6 +1498,11 @@ server.on('error', (err) => {
 });
 
 server.listen(PORT, HOST, () => {
+  try {
+    responseLog.settleStaleRuns(PROJECT_ROOT, activeResponseIds);
+  } catch (err) {
+    console.error('[Crank] could not settle stale history:', err.message);
+  }
   console.log(`[Crank] Companion listening on http://${HOST}:${PORT}`);
   console.log(`[Crank] WebSocket ws://${HOST}:${PORT}/ws`);
   console.log(`[Crank] Project root: ${PROJECT_ROOT}`);

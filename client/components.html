@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Crank components</title>
+  <script type="module">
+    import '../bookmarklet/crank-ui.css';
+  </script>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #eceef2;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      color: #1a1a1a;
+    }
+    .page {
+      max-width: 28rem;
+      margin: 0 auto;
+      padding: 28px 16px 64px;
+    }
+    .switcher {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .switcher p {
+      margin: 0;
+      font-size: 13px;
+      color: #444;
+    }
+    .switcher-toggle {
+      display: flex;
+      padding: 2px;
+      border-radius: 10px;
+      background: #fff;
+      border: 1px solid #d9d9d9;
+    }
+    .switcher-toggle button {
+      border: 0;
+      background: transparent;
+      border-radius: 8px;
+      padding: 6px 10px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      color: #444;
+    }
+    .switcher-toggle button[aria-pressed="true"] {
+      background: #1c1c1c;
+      color: #fff;
+    }
+    #vp-shell {
+      position: relative;
+      max-height: none;
+      overflow: visible;
+    }
+    #vp-shell .vp-panel-body {
+      overflow: visible;
+    }
+    #vp-shell .vp-panel-block:has(.vp-field-select.is-open) {
+      z-index: 5;
+    }
+    .vp-gallery-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    #vp-shell[data-design="legacy"] {
+      --card: #ffffff;
+      --background: oklch(0.985 0.002 255);
+      --foreground: oklch(0.17 0.01 255);
+      --vp-panel-section-bg: #fafafa;
+      --vp-hairline: oklch(0.91 0.005 255);
+      --vp-panel-stroke-light: #ffffff;
+      --vp-panel-stroke-rule: #ececec;
+      --vp-panel-inset-x: 10px;
+      --vp-footer-fade: linear-gradient(180deg, rgb(255 255 255 / 0) 0%, rgb(255 255 255 / 0.96) 22%, #ffffff 100%);
+      --vp-button-secondary-stroke: #e3e3e3;
+      --vp-button-secondary-gradient: linear-gradient(180deg, #ffffff 0%, #f5f5f6 100%);
+      --vp-button-secondary-gradient-hover: linear-gradient(180deg, #ffffff 0%, #f1f1f2 100%);
+      --vp-button-secondary-gradient-active: linear-gradient(180deg, #f1f1f2 0%, #ebebec 100%);
+      --vp-button-primary-gradient: linear-gradient(180deg, #323232 0%, #222222 100%);
+      --vp-button-primary-gradient-hover: linear-gradient(180deg, #363636 0%, #252525 100%);
+      --vp-button-primary-gradient-active: linear-gradient(180deg, #2e2e2e 0%, #1e1e1e 100%);
+      --vp-button-primary-shadow:
+        inset 0 1px 0 0 rgb(255 255 255 / 0.15),
+        inset 0 -1px 1.2px 0.35px #121212,
+        0 1px 1px 0 rgb(13 13 13 / 0.18),
+        0 3px 5px -2px rgb(13 13 13 / 0.36);
+      --vp-button-primary-shadow-hover:
+        inset 0 1px 0 0 rgb(255 255 255 / 0.17),
+        inset 0 -1px 1.2px 0.35px #121212,
+        0 1px 1.5px 0 rgb(13 13 13 / 0.2),
+        0 4px 6px -2px rgb(13 13 13 / 0.4);
+      --vp-button-secondary-face-shadow:
+        inset 0 1px 0 0 rgb(255 255 255 / 0.32),
+        inset 0 -1px 0 0 rgb(17 20 28 / 0.038),
+        0 1px 1px 0 rgb(17 20 28 / 0.06),
+        0 3px 5px -2px rgb(17 20 28 / 0.16);
+      --vp-button-secondary-face-shadow-hover:
+        inset 0 1px 0 0 rgb(255 255 255 / 0.36),
+        inset 0 -1px 0 0 rgb(28 32 42 / 0.052),
+        0 1px 1.5px 0 rgb(28 32 42 / 0.08),
+        0 4px 6px -2px rgb(28 32 42 / 0.2);
+      --vp-input-surface-gradient: linear-gradient(180deg, #ffffff 0%, #f5f5f6 100%);
+      --vp-input-surface-gradient-hover: linear-gradient(180deg, #ffffff 0%, #f1f1f2 100%);
+      --vp-input-surface-gradient-focus: linear-gradient(180deg, #ffffff 0%, #f1f1f2 100%);
+      --vp-input-surface-shadow: none;
+      --vp-input-surface-shadow-hover: none;
+      --vp-input-surface-shadow-focus: none;
+      --vp-list-surface-gradient: linear-gradient(180deg, #ffffff 0%, #fcfcfc 100%);
+      --vp-dropdown-shadow:
+        inset 0 1px 0 0 rgb(255 255 255 / 0.32),
+        inset 0 -1px 0 0 rgb(17 20 28 / 0.038),
+        0 1px 1px 0 rgb(17 20 28 / 0.055);
+      border-color: var(--vp-hairline);
+      color: oklch(0.17 0.01 255);
+    }
+    #vp-shell[data-design="legacy"] .vp-input-native,
+    #vp-shell[data-design="legacy"] .vp-textarea-native,
+    #vp-shell[data-design="legacy"] .vp-field-select-trigger,
+    #vp-shell[data-design="legacy"] .vp-field-static-display:not(.is-placeholder) {
+      color: oklch(0.17 0.01 255);
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="switcher">
+      <p>Every control used in the panel.</p>
+      <div class="switcher-toggle" role="group" aria-label="Design version">
+        <button type="button" data-design="current" aria-pressed="true">Current</button>
+        <button type="button" data-design="legacy" aria-pressed="false">Previous</button>
+      </div>
+    </div>
+
+    <div id="vp-shell">
+      <div class="vp-panel-root">
+        <header class="vp-panel-header">
+          <h1 class="vp-panel-title">Components</h1>
+        </header>
+        <div class="vp-panel-body">
+          <section class="vp-panel-block">
+            <div class="vp-glean-section-head">
+              <p class="vp-type-label">Functional requirements</p>
+              <p class="vp-type-support">Explain this feature</p>
+            </div>
+
+            <div class="vp-field">
+              <div class="vp-field-label-grid vp-field-label-grid--default">
+                <span class="vp-field-label-visible">Headline</span>
+              </div>
+              <div class="vp-input-surface vp-control-surface vp-control-shell">
+                <input class="vp-input-native vp-control-typography" type="text" value="Utilize our robust platform" />
+              </div>
+            </div>
+
+            <div class="vp-field">
+              <div class="vp-field-label-grid vp-field-label-grid--default">
+                <span class="vp-field-label-visible">Description</span>
+              </div>
+              <div class="vp-input-surface vp-input-surface--textarea vp-input-surface--paragraph vp-control-surface vp-control-shell">
+                <textarea class="vp-textarea-native vp-control-typography" rows="3">Seamless fleet insights for every operator.</textarea>
+              </div>
+            </div>
+
+            <div class="vp-field">
+              <div class="vp-field-label-grid vp-field-label-grid--default">
+                <span class="vp-field-label-visible">Tone</span>
+              </div>
+              <div class="vp-field-select" style="width:100%;">
+                <div class="vp-input-surface vp-control-surface vp-control-shell">
+                  <button type="button" class="vp-field-select-trigger vp-control-typography" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="vp-field-select-label">Direct</span>
+                    <svg class="vp-field-select-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 5L7 9.75L11.75 5"/></svg>
+                  </button>
+                </div>
+                <div class="vp-dropdown-menu crank-hidden" role="menu">
+                  <button type="button" class="vp-menu-item is-checked" role="menuitemradio" aria-checked="true"><span class="vp-menu-item__label">Direct</span></button>
+                  <button type="button" class="vp-menu-item" role="menuitemradio" aria-checked="false"><span class="vp-menu-item__label">Warm</span></button>
+                  <button type="button" class="vp-menu-item" role="menuitemradio" aria-checked="false"><span class="vp-menu-item__label">Formal</span></button>
+                </div>
+              </div>
+            </div>
+
+            <div class="vp-field vp-field--inline vp-field--option-count">
+              <div class="vp-field-label-grid vp-field-label-grid--default">
+                <span class="vp-field-label-visible">Max alternatives</span>
+              </div>
+              <div class="vp-field-select" style="width:calc(4.75rem + 8px);">
+                <div class="vp-input-surface vp-control-surface vp-control-shell">
+                  <button type="button" class="vp-field-select-trigger vp-control-typography" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="vp-field-select-label">3</span>
+                    <svg class="vp-field-select-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 5L7 9.75L11.75 5"/></svg>
+                  </button>
+                </div>
+                <div class="vp-dropdown-menu crank-hidden" role="menu">
+                  <button type="button" class="vp-menu-item" role="menuitemradio"><span class="vp-menu-item__label">2</span></button>
+                  <button type="button" class="vp-menu-item is-checked" role="menuitemradio"><span class="vp-menu-item__label">3</span></button>
+                  <button type="button" class="vp-menu-item" role="menuitemradio"><span class="vp-menu-item__label">4</span></button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="vp-panel-block">
+            <div class="vp-field">
+              <div class="vp-field-label-grid vp-field-label-grid--default">
+                <span class="vp-field-label-visible">Selected copy</span>
+              </div>
+              <div class="vp-field-static-text">
+                <div class="vp-input-surface vp-input-surface--static vp-control-surface vp-control-shell">
+                  <div class="vp-field-static-display vp-control-typography">Keep the fleet moving.</div>
+                </div>
+              </div>
+            </div>
+            <div class="vp-gallery-actions">
+              <button type="button" class="vp-button-primary-surface vp-button-surface-control vp-control-shell vp-control-typography">Ask Glean</button>
+              <button type="button" class="vp-button-secondary-surface vp-button-surface-control vp-control-shell vp-control-typography">Apply</button>
+              <button type="button" class="vp-button-ghost-surface vp-control-typography">Close</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    var shell = document.getElementById('vp-shell');
+    var stored = localStorage.getItem('crank.componentDesign') || 'current';
+    function applyDesign(name) {
+      if (name === 'legacy') shell.setAttribute('data-design', 'legacy');
+      else shell.removeAttribute('data-design');
+      document.querySelectorAll('.switcher-toggle button').forEach(function (button) {
+        button.setAttribute('aria-pressed', button.getAttribute('data-design') === name ? 'true' : 'false');
+      });
+      localStorage.setItem('crank.componentDesign', name);
+    }
+    applyDesign(stored);
+    document.querySelector('.switcher-toggle').addEventListener('click', function (event) {
+      var button = event.target.closest('button');
+      if (!button) return;
+      applyDesign(button.getAttribute('data-design'));
+    });
+    shell.addEventListener('click', function (event) {
+      var trigger = event.target.closest('.vp-field-select-trigger');
+      if (!trigger) return;
+      var select = trigger.closest('.vp-field-select');
+      var menu = select.querySelector('.vp-dropdown-menu');
+      var open = !select.classList.contains('is-open');
+      shell.querySelectorAll('.vp-field-select.is-open').forEach(function (other) {
+        other.classList.remove('is-open');
+        other.querySelector('.vp-dropdown-menu').classList.add('crank-hidden');
+        other.querySelector('.vp-field-select-trigger').setAttribute('aria-expanded', 'false');
+      });
+      if (open) {
+        select.classList.add('is-open');
+        menu.classList.remove('crank-hidden');
+        trigger.setAttribute('aria-expanded', 'true');
+      }
+    });
+  </script>
+</body>
+</html>

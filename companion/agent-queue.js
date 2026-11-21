@@ -195,8 +195,9 @@ function buildCompactCopyPrompt({ session, variant, nodes, label }) {
       ? collectCopyChangesFromEdits({ session, nodes })
       : collectCopyChanges({ session, variant });
   const lines = [
-    'Update UI copy in source files.',
-    'Search the repo for each Old string and update every occurrence across the product (not only this page).',
+    'Update the existing UI copy in source. Replace each current string in place.',
+    'Do not add a new string, component, or duplicate. Keep the same element and the surrounding code.',
+    'Each change below is one existing line of copy. Find that exact Old text and replace it with New.',
     '',
     `Page: ${session?.pageUrl || '(unknown)'}`,
     `Block: ${session?.selector || '(unknown)'}`
@@ -213,14 +214,20 @@ function buildCompactCopyPrompt({ session, variant, nodes, label }) {
     lines.push('(no text deltas — inspect variant vs selection)');
   } else {
     for (const c of changes) {
-      lines.push(
-        `${c.label}: ${JSON.stringify(c.oldText)} → ${JSON.stringify(c.newText)}`
-      );
+      lines.push(`${c.label}:`);
+      if (c.selector) lines.push(`  Where: ${c.selector}`);
+      lines.push(`  Old: ${JSON.stringify(c.oldText)}`);
+      lines.push(`  New: ${JSON.stringify(c.newText)}`);
     }
   }
   lines.push(
     '',
-    'Rules: 1:1 mapping; JSX/HTML/TSX string literals; skip dynamic/i18n/bound values; confirm files changed.'
+    'Rules:',
+    '- Map each field 1:1. Do not reuse one New value for every field.',
+    '- Edit the JSX, HTML, or TSX string that already contains Old.',
+    '- Skip dynamic, i18n, and bound values. If a string is not hardcoded, say so and leave it.',
+    '- When the same Old string is the same copy elsewhere in the product, update those existing occurrences too.',
+    '- After the edits, list the files you changed.'
   );
   return { prompt: lines.join('\n'), changes };
 }

@@ -6,6 +6,12 @@ team.env
 .DS_Store
 dist/
 .crank/secrets.json
+.crank/runtime.json
 coverage/
 *.tgz
-.crank/runtime.json
+# Local Glean response history. Stays on this machine.
+# Force-add only if you mean to include it in a PR.
+.crank/responses.json
+.crank/responses.json.tmp
+.crank/shots/
+.crank/bin/
