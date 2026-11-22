@@ -2278,7 +2278,8 @@ html[data-crank-page-scroll="hidden"] body::-webkit-scrollbar {
   display: none;
 }
 
-#vp-shell .vp-panel-footer .vp-panel-block:last-child::after {
+#vp-shell .vp-panel-footer .vp-panel-block:last-child::after,
+#vp-shell .vp-panel-footer .vp-panel-block:has(#vc-glean)::after {
   display: none;
 }
 
@@ -2293,6 +2294,19 @@ html[data-crank-page-scroll="hidden"] body::-webkit-scrollbar {
 
 #vp-shell .vp-panel-footer .vp-button-group .vp-button-surface-control {
   min-height: var(--vp-control-shell-height);
+}
+
+#vp-shell #vc-panel-footer .vp-button-group:has(#vc-glean) {
+  width: 100%;
+}
+
+#vp-shell #vc-glean.vp-button-surface-control {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  min-width: 0;
+  height: 46px;
+  min-height: 46px;
+  border-radius: 999px;
 }
 
 #vp-shell .vp-field--inline {
@@ -4006,8 +4020,8 @@ button:disabled,
   right: 20px;
   bottom: 20px;
   z-index: 2147483647;
-  width: 40px;
-  height: 40px;
+  width: 46px;
+  height: 46px;
   pointer-events: none;
   color-scheme: dark;
 }
@@ -4019,22 +4033,33 @@ button:disabled,
   bottom: 0;
   display: flex;
   align-items: center;
-  height: 40px;
-  padding: 2px;
+  height: 46px;
+  padding: 3px;
   gap: 2px;
   border-radius: 999px;
-  background: #111111;
+  border: 1px solid rgb(51 51 51 / 0.55);
+  background: linear-gradient(180deg, #323232 0%, #222222 100%);
   color: #f8f8f8;
   box-shadow:
-    0 0 0 1px rgb(255 255 255 / 0.08) inset,
-    0 8px 24px rgb(0 0 0 / 0.35);
+    inset 0 1px 0 0 rgb(255 255 255 / 0.15),
+    0 2px 4px -1px rgb(13 13 13 / 0.5),
+    0 8px 18px -10px rgb(0 0 0 / 0.35);
   transform-origin: right center;
-  clip-path: inset(0 0 0 calc(100% - 40px) round 20px);
-  transition: clip-path 200ms var(--ease-in-out, cubic-bezier(0.77, 0, 0.175, 1));
+  clip-path: inset(0 0 0 calc(100% - 46px) round 23px);
+  transition: clip-path 200ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 #vp-crank-launcher.is-expanded .vp-crank-bar {
-  clip-path: inset(0 0 0 0 round 20px);
+  clip-path: inset(0 0 0 0 round 23px);
+}
+
+/* Slide beside the floating panel on the compositor. Do not animate `right`. */
+#vp-crank-launcher:not(.is-in-panel) {
+  transition: transform 220ms cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+#vp-crank-launcher.is-beside-panel:not(.is-in-panel) {
+  transform: translate3d(-380px, 0, 0);
 }
 
 .vp-crank-tools {
@@ -4054,7 +4079,7 @@ button:disabled,
 
 .vp-crank-sep {
   width: 1px;
-  height: 16px;
+  height: 22px;
   margin: 0 4px;
   background: rgb(255 255 255 / 0.16);
   flex: none;
@@ -4063,11 +4088,11 @@ button:disabled,
 #vp-crank-fab,
 .vp-crank-fab {
   position: absolute;
-  right: 2px;
-  top: 2px;
+  right: 3px;
+  top: 3px;
   z-index: 2;
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   padding: 0;
   border: none;
   border-radius: 50%;
@@ -4097,9 +4122,9 @@ button:disabled,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
   padding: 0;
   border: none;
   border-radius: calc(0.4rem + 4px);
@@ -4121,11 +4146,11 @@ button:disabled,
 
 /* Floating pill: outer ends follow the bar, inner corners match the other tools. */
 #vp-crank-launcher:not(.is-in-panel) .vp-crank-tool--cap {
-  border-radius: 18px calc(0.4rem + 4px) calc(0.4rem + 4px) 18px;
+  border-radius: 20px calc(0.4rem + 4px) calc(0.4rem + 4px) 20px;
 }
 
 #vp-crank-launcher:not(.is-in-panel) .vp-crank-tools > .vp-crank-tool:last-child {
-  border-radius: calc(0.4rem + 4px) 18px 18px calc(0.4rem + 4px);
+  border-radius: calc(0.4rem + 4px) 20px 20px calc(0.4rem + 4px);
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -4149,9 +4174,13 @@ button:disabled,
 
 .vp-crank-tool svg {
   display: block;
-  width: 16px;
-  height: 16px;
+  width: 22px;
+  height: 22px;
   fill: currentColor;
+}
+
+.vp-crank-tool svg.is-flipped {
+  transform: scaleX(-1);
 }
 
 #vp-crank-tooltip {
@@ -4179,8 +4208,8 @@ button:disabled,
 
 #vp-crank-fab img,
 .vp-crank-fab img {
-  width: 22px;
-  height: 22px;
+  width: 40px;
+  height: 40px;
   display: block;
   pointer-events: none;
   border-radius: 50%;
@@ -4196,11 +4225,108 @@ button:disabled,
   border-top: 1px solid #2a2a2a;
 }
 
+/* Docked bar floats over the scrolling panel. No solid plate behind it. */
+#vp-shell[data-crank-dock="1"] {
+  --vp-dock-scrim: 102px;
+}
+
+#vp-shell[data-crank-dock="1"]:not([data-crank-step="thinking"]):not([data-crank-step="results"]):not([data-crank-view="history"]):not([data-crank-view="settings"]):not([data-crank-surface="layers"]) {
+  --vp-dock-scrim: 214px;
+}
+
+#vp-shell[data-crank-dock="1"] .vp-panel-root {
+  position: relative;
+}
+
+#vp-shell[data-crank-dock="1"] #vp-body {
+  padding-bottom: 90px;
+}
+
+#vp-shell[data-crank-dock="1"][data-crank-step="ask"] #vp-body,
+#vp-shell[data-crank-dock="1"]:not([data-crank-step]) #vp-body {
+  padding-bottom: 172px;
+}
+
+#vp-shell[data-crank-dock="1"][data-crank-view="history"] #vp-body,
+#vp-shell[data-crank-dock="1"][data-crank-view="settings"] #vp-body,
+#vp-shell[data-crank-dock="1"][data-crank-surface="layers"] #vp-body,
+#vp-shell[data-crank-dock="1"][data-crank-step="thinking"] #vp-body,
+#vp-shell[data-crank-dock="1"][data-crank-step="results"] #vp-body {
+  padding-bottom: 90px;
+}
+
+#vp-shell[data-crank-dock="1"] #vc-panel-footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 70px;
+  z-index: 4;
+  background: transparent;
+  border-top: none;
+  box-shadow: none;
+  pointer-events: none;
+}
+
+#vp-shell[data-crank-dock="1"] #vc-panel-footer .vp-panel-block {
+  background: transparent;
+  pointer-events: auto;
+}
+
+#vp-shell[data-crank-dock="1"] #vc-chrome-footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  justify-content: center;
+  margin: 0;
+  padding: 0 var(--vp-panel-inset-x, 14px) 16px;
+  background: transparent;
+  border-top: none;
+  pointer-events: none;
+  overflow: visible;
+}
+
+/* Tall while Ask Glean is showing; only as tall as the bar on other tabs. */
+#vp-shell[data-crank-dock="1"] .vp-panel-root::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--vp-dock-scrim);
+  z-index: 3;
+  pointer-events: none;
+  transition: height 180ms ease;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--card) 10%, transparent) 46%,
+    color-mix(in srgb, var(--card) 22%, transparent) 100%
+  );
+  backdrop-filter: blur(32px) saturate(1.2);
+  -webkit-backdrop-filter: blur(32px) saturate(1.2);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 38%, #000 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 38%, #000 100%);
+}
+
+#vp-shell[data-theme="dark"][data-crank-dock="1"] .vp-panel-root::after {
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgb(0 0 0 / 0.34) 46%,
+    rgb(0 0 0 / 0.62) 100%
+  );
+  backdrop-filter: blur(32px) saturate(0.8) brightness(0.62);
+  -webkit-backdrop-filter: blur(32px) saturate(0.8) brightness(0.62);
+}
+
 #vp-shell #vp-crank-launcher {
   position: relative;
   right: auto;
   bottom: auto;
-  width: 100%;
+  width: auto;
   height: auto;
   pointer-events: auto;
 }
@@ -4209,14 +4335,55 @@ button:disabled,
   position: relative;
   right: auto;
   bottom: auto;
-  width: 100%;
-  height: 48px;
-  border-radius: 0;
+  z-index: 1;
+  width: auto;
+  height: 46px;
+  border-radius: 999px;
   clip-path: none;
-  box-shadow: none;
+  border: 1px solid rgb(51 51 51 / 0.55);
+  background: linear-gradient(180deg, #323232 0%, #222222 100%);
+  color: oklch(0.99 0 0);
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.15),
+    0 2px 4px -1px rgb(13 13 13 / 0.5),
+    0 8px 18px -10px rgb(0 0 0 / 0.35);
   justify-content: center;
-  padding: 6px 8px;
+  padding: 3px;
   transition: none;
+}
+
+#vp-shell[data-crank-dock="1"] #vp-crank-launcher,
+#vp-shell[data-crank-dock="1"] #vp-crank-launcher .vp-crank-bar,
+#vp-shell[data-crank-dock="1"] #vp-crank-launcher .vp-crank-tools {
+  width: 100%;
+}
+
+#vp-shell[data-crank-dock="1"] #vp-crank-launcher {
+  z-index: 1;
+}
+
+#vp-shell[data-crank-dock="1"] #vp-crank-launcher .vp-crank-bar {
+  height: 46px;
+  padding: 3px;
+}
+
+#vp-shell[data-crank-dock="1"] #vp-crank-launcher .vp-crank-tool {
+  flex: 1 1 0;
+  width: auto;
+  height: 40px;
+}
+
+#vp-shell[data-crank-dock="1"] #vp-crank-launcher .vp-crank-tool svg {
+  width: 22px;
+  height: 22px;
+}
+
+#vp-shell[data-crank-dock="1"] #vp-crank-launcher .vp-crank-tool--cap {
+  border-radius: 20px calc(0.4rem + 4px) calc(0.4rem + 4px) 20px;
+}
+
+#vp-shell[data-crank-dock="1"] #vp-crank-launcher .vp-crank-tools > .vp-crank-tool:last-child {
+  border-radius: calc(0.4rem + 4px) 20px 20px calc(0.4rem + 4px);
 }
 
 #vp-shell #vp-crank-launcher .vp-crank-tools {
@@ -4230,7 +4397,9 @@ button:disabled,
   .vp-crank-tools,
   .vp-crank-tool,
   #vp-crank-fab,
-  .vp-crank-fab {
+  .vp-crank-fab,
+  #vp-crank-launcher:not(.is-in-panel),
+  #vp-shell[data-crank-dock="1"] .vp-panel-root::after {
     transition: none;
   }
 
