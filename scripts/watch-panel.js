@@ -35,7 +35,7 @@ function rebuild(source) {
     } catch (err) {
       console.error('[crank] embed failed:', err.message || err);
     }
-  }, 250);
+  }, 1500);
 }
 
 for (const rel of targets) {
