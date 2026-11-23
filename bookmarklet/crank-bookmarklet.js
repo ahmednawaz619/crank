@@ -6491,13 +6491,12 @@
       return cells;
     });
     const hasGrades = list.some(function (v) {
-      return v.grades && typeof v.grades === 'object';
+      return !!gradesFor(v);
     });
     const hasNotes = !hasGrades && list.some(function (v) {
       return v.scores;
     });
     const header = ['Option'].concat(columns);
-    if (hasGrades) GRADE_COLUMNS.forEach(function (g) { header.push(g[1]); });
     if (hasNotes) header.push('Agent notes');
     const rows = [header];
     list.forEach(function (v, i) {
@@ -6508,20 +6507,101 @@
         })[0];
         row.push(hit ? hit.text : '');
       });
-      if (hasGrades) {
-        GRADE_COLUMNS.forEach(function (g) {
-          const gr = v.grades && v.grades[g[0]];
-          row.push(
-            gr && typeof gr === 'object'
-              ? [gr.score, gr.explanation || gr.rationale].filter(Boolean).join(' — ')
-              : ''
-          );
-        });
-      }
       if (hasNotes) row.push(v.scores || '');
       rows.push(row);
     });
     return { rows: rows, notesBefore: '', notesAfter: '' };
+  }
+
+  // Grades for a variant: variant.grades, rawOption.grades, or parsed from the saved "Clarity: Strong — …" notes.
+  function gradesFor(v) {
+    if (!v) return null;
+    const has = function (g) {
+      return (
+        g &&
+        typeof g === 'object' &&
+        GRADE_COLUMNS.some(function (c) {
+          const x = g[c[0]];
+          return x && typeof x === 'object' && (x.score || x.explanation || x.rationale);
+        })
+      );
+    };
+    if (has(v.grades)) return v.grades;
+    if (v.rawOption && has(v.rawOption.grades)) return v.rawOption.grades;
+    const text = typeof v.scores === 'string' ? v.scores : '';
+    if (!text) return null;
+    const labels = GRADE_COLUMNS.map(function (c) {
+      return c[1];
+    }).join('|');
+    const re = new RegExp('(?:^|\\s·\\s)(' + labels + '):\\s*', 'g');
+    const hits = [];
+    let m;
+    while ((m = re.exec(text)) !== null) hits.push({ label: m[1], start: m.index, end: re.lastIndex });
+    if (!hits.length) return null;
+    const out = {};
+    hits.forEach(function (h, i) {
+      const seg = text.slice(h.end, i + 1 < hits.length ? hits[i + 1].start : text.length).trim();
+      const parts = seg.split(/\s+—\s+/);
+      const col = GRADE_COLUMNS.filter(function (c) {
+        return c[1] === h.label;
+      })[0];
+      out[col[0]] = { score: parts.shift() || '', explanation: parts.join(' — ') };
+    });
+    return has(out) ? out : null;
+  }
+
+  function addGradeColumns(data, list) {
+    const rows = data.rows;
+    if (!rows.length || !list.length) return data;
+    const grades = list.map(gradesFor);
+    if (!grades.some(Boolean)) return data;
+    const header = rows[0];
+    const lower = header.map(function (h) {
+      return String(h || '').trim().toLowerCase();
+    });
+    const toAdd = GRADE_COLUMNS.filter(function (g) {
+      return lower.indexOf(g[1].toLowerCase()) === -1;
+    });
+    if (!toAdd.length) return data;
+    let at = header.length;
+    const last = lower[lower.length - 1] || '';
+    if (header.length > 1 && /note|rationale|feedback|comment|explanation/.test(last)) at = header.length - 1;
+    const optNum = function (text) {
+      const mm = /(\d+)/.exec(String(text || ''));
+      return mm ? Number(mm[1]) : 0;
+    };
+    const byNum = {};
+    list.forEach(function (v, i) {
+      const n = optNum(v.label || v.id);
+      if (n && !byNum[n]) byNum[n] = i;
+    });
+    const gradeCols = [];
+    toAdd.forEach(function (g, k) {
+      gradeCols.push(at + k);
+    });
+    const next = rows.map(function (cells, r) {
+      const copy = cells.slice();
+      while (copy.length < at) copy.push('');
+      const ins = toAdd.map(function (g) {
+        if (r === 0) return g[1];
+        const n = optNum(cells[0]);
+        const idx = n && byNum[n] != null ? byNum[n] : r - 1;
+        const gr = grades[idx] && grades[idx][g[0]];
+        if (!gr || typeof gr !== 'object') return '\u2014';
+        const score = String(gr.score || '').trim();
+        const expl = String(gr.explanation || gr.rationale || '').trim();
+        if (!score && !expl) return '\u2014';
+        return score + (expl ? '\n' + expl : '');
+      });
+      Array.prototype.splice.apply(copy, [at, 0].concat(ins));
+      return copy;
+    });
+    return {
+      rows: next,
+      notesBefore: data.notesBefore,
+      notesAfter: data.notesAfter,
+      gradeCols: gradeCols
+    };
   }
 
   function tableDataFor(variants, rawTable) {
@@ -6533,11 +6613,13 @@
       })[0];
       md = hit ? hit.agentTable : '';
     }
+    let data = null;
     if (md) {
       const parsed = parseAgentTable(md);
-      if (parsed.rows.length) return parsed;
+      if (parsed.rows.length) data = parsed;
     }
-    return list.length ? rebuildTableRows(list) : null;
+    if (!data && list.length) data = rebuildTableRows(list);
+    return data ? addGradeColumns(data, list) : null;
   }
 
   function buildTableElement(data) {
@@ -6570,12 +6652,44 @@
       table.appendChild(colgroup);
       table.style.minWidth = minW + 'px';
     }
+    const gradeSet = {};
+    (data.gradeCols || []).forEach(function (i) {
+      gradeSet[i] = true;
+    });
     data.rows.forEach(function (cells, r) {
       const tr = document.createElement('tr');
       cells.forEach(function (text) {
         const cell = document.createElement(r === 0 ? 'th' : 'td');
         if (r === 0) cell.setAttribute('scope', 'col');
-        appendInlineMarkdown(cell, text);
+        const ci = tr.children.length;
+        if (r > 0 && ci === 0) {
+          const t = String(text == null ? '' : text).replace(/^\s*option\s*[:#]?\s*#?\s*/i, '').trim();
+          const mt = /^(\S+?)\s*\(([^)]+)\)\s*$/.exec(t);
+          if (mt) {
+            cell.appendChild(document.createTextNode(mt[1] + ' '));
+            const tag = document.createElement('span');
+            tag.className = 'vp-options-table-tag';
+            tag.textContent = mt[2];
+            cell.appendChild(tag);
+          } else {
+            cell.appendChild(document.createTextNode(t));
+          }
+        } else if (r > 0 && gradeSet[ci]) {
+          const s = String(text == null ? '' : text);
+          const nl = s.indexOf('\n');
+          const sc = document.createElement('strong');
+          sc.className = 'vp-options-table-grade-score';
+          sc.textContent = nl === -1 ? s : s.slice(0, nl);
+          cell.appendChild(sc);
+          if (nl !== -1 && s.slice(nl + 1).trim()) {
+            const ex = document.createElement('div');
+            ex.className = 'vp-options-table-grade-note';
+            ex.textContent = s.slice(nl + 1).trim();
+            cell.appendChild(ex);
+          }
+        } else {
+          appendInlineMarkdown(cell, text);
+        }
         tr.appendChild(cell);
       });
       table.appendChild(tr);

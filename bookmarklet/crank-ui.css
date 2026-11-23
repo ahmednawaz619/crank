@@ -1093,10 +1093,14 @@ html[data-crank-page-scroll="hidden"] body::-webkit-scrollbar {
 /* View Table section (after screenshot, before options) */
 .vc-view-table {
   display: block;
-  width: 100%;
+  /* extend to panel edges so hover spans edge to edge between dividers */
+  width: calc(100% + 2 * var(--vp-panel-inset-x, 14px));
   box-sizing: border-box;
-  padding: 8px 0;
-  margin: 0;
+  /* 9px vertical; inset re-added horizontally so text stays aligned */
+  padding: 9px var(--vp-panel-inset-x, 14px);
+  /* cancel the flex gap from #vc-variants so the row sits 9px from each divider; negative inline margin reaches panel edges */
+  margin: calc(-1 * var(--vp-panel-field-gap, 20px)) calc(-1 * var(--vp-panel-inset-x, 14px));
+  text-align: start;
   border: none;
   background: transparent;
   color: var(--foreground);
@@ -4881,5 +4885,27 @@ button:disabled,
 
 .vp-options-table td.vp-options-table-note {
   background: var(--muted);
+  color: var(--muted-foreground);
+}
+
+/* View table: grade cells + option tag */
+.vp-options-table .vp-options-table-grade-score {
+  display: block;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.vp-options-table .vp-options-table-grade-note {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.vp-options-table .vp-options-table-tag {
+  font-size: 11px;
+  font-weight: 400;
   color: var(--muted-foreground);
 }
