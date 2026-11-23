@@ -78,7 +78,7 @@
   }
 
   function vpChevronSvgHtml() {
-    return '<svg class="vp-field-select-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.25 5L7 9.75L11.75 5"/></svg>';
+    return '<svg class="vp-field-select-chevron" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4.43057 8.5119C4.70014 8.19741 5.17361 8.16099 5.48811 8.43056L12 14.0122L18.5119 8.43056C18.8264 8.16099 19.2999 8.19741 19.5695 8.51191C19.839 8.8264 19.8026 9.29987 19.4881 9.56944L12.4881 15.5694C12.2072 15.8102 11.7928 15.8102 11.5119 15.5694L4.51192 9.56944C4.19743 9.29987 4.161 8.8264 4.43057 8.5119Z" fill="currentColor"/></svg>';
   }
 
   function vpParseSelectOptions(optionsHtml) {
@@ -197,7 +197,7 @@
       const isChecked = entry.value === selectedValue;
       return '<button type="button" class="vp-menu-item' + (isChecked ? ' is-checked' : '') + '" role="menuitemradio" aria-checked="' + (isChecked ? 'true' : 'false') + '" data-value="' + escapeAttr(entry.value) + '"' + (entry.disabled ? ' disabled' : '') + '>'
         + '<span class="vp-menu-item__label">' + escapeHtml(entry.label) + '</span>'
-        + (isChecked ? '<svg class="vp-menu-item__check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12L9 17L20 6"/></svg>' : '')
+        + (isChecked ? '<svg class="vp-menu-item__check" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.4697 6.46973C18.7626 6.17684 19.2373 6.17684 19.5302 6.46973C19.8231 6.76262 19.8231 7.23738 19.5302 7.53028L9.53022 17.5303C9.23732 17.8232 8.76256 17.8232 8.46967 17.5303L4.46967 13.5303C4.17678 13.2374 4.17678 12.7626 4.46967 12.4697C4.76256 12.1768 5.23732 12.1768 5.53022 12.4697L8.99994 15.9395L18.4697 6.46973Z" fill="currentColor"/></svg>' : '')
         + '</button>';
     }).join('');
     const triggerLabel = escapeHtml(selectedLabel);
