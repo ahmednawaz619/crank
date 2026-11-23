@@ -97,6 +97,32 @@ const PROJECT_ROOT = env('PROJECT_ROOT')
   ? path.resolve(env('PROJECT_ROOT'))
   : path.resolve(__dirname, '..');
 
+/**
+ * Canonical history/screenshot store. Starting the companion from a different
+ * folder (repo root vs client/) must not orphan existing history, so prefer
+ * this root, then any parent/child that already holds responses.json or shots.
+ */
+function hasStore(root) {
+  const dir = path.join(root, '.crank');
+  return (
+    fs.existsSync(path.join(dir, 'responses.json')) ||
+    fs.existsSync(path.join(dir, 'shots'))
+  );
+}
+function dataRootCandidates() {
+  const list = [PROJECT_ROOT];
+  let dir = PROJECT_ROOT;
+  for (let i = 0; i < 3; i += 1) {
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    list.push(up);
+    dir = up;
+  }
+  list.push(path.resolve(__dirname, '..'));
+  return [...new Set(list)];
+}
+const DATA_ROOT = dataRootCandidates().find(hasStore) || PROJECT_ROOT;
+
 const app = express();
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -164,8 +190,10 @@ app.get('/shots/:file', (req, res) => {
     res.status(404).end();
     return;
   }
-  const file = path.join(PROJECT_ROOT, '.crank', 'shots', name);
-  if (!fs.existsSync(file)) {
+  const file = dataRootCandidates()
+    .map((root) => path.join(root, '.crank', 'shots', name))
+    .find((f) => fs.existsSync(f));
+  if (!file) {
     res.status(404).end();
     return;
   }
@@ -560,8 +588,8 @@ const activeResponseIds = new Set();
 /** Past Glean searches on this machine. */
 app.get('/api/responses', (_req, res) => {
   try {
-    responseLog.settleStaleRuns(PROJECT_ROOT, activeResponseIds);
-    res.json({ ok: true, runs: responseLog.listResponses(PROJECT_ROOT) });
+    responseLog.settleStaleRuns(DATA_ROOT, activeResponseIds);
+    res.json({ ok: true, runs: responseLog.listResponses(DATA_ROOT) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -569,8 +597,8 @@ app.get('/api/responses', (_req, res) => {
 
 app.get('/api/responses/:id', (req, res) => {
   try {
-    responseLog.settleStaleRuns(PROJECT_ROOT, activeResponseIds);
-    const run = responseLog.getResponse(PROJECT_ROOT, req.params.id);
+    responseLog.settleStaleRuns(DATA_ROOT, activeResponseIds);
+    const run = responseLog.getResponse(DATA_ROOT, req.params.id);
     if (!run) {
       res.status(404).json({ ok: false, error: 'Response not found' });
       return;
@@ -583,8 +611,7 @@ app.get('/api/responses/:id', (req, res) => {
 
 app.post('/api/responses/:id/expire', (req, res) => {
   try {
-    const run = responseLog.expireResponse(
-      PROJECT_ROOT,
+    const run = responseLog.expireResponse(DATA_ROOT,
       req.params.id,
       req.body?.error || 'No response'
     );
@@ -600,7 +627,7 @@ app.post('/api/responses/:id/expire', (req, res) => {
 
 app.delete('/api/responses/:id', (req, res) => {
   try {
-    const removed = responseLog.deleteResponse(PROJECT_ROOT, req.params.id);
+    const removed = responseLog.deleteResponse(DATA_ROOT, req.params.id);
     if (!removed) {
       res.status(404).json({ ok: false, error: 'Response not found' });
       return;
@@ -620,7 +647,7 @@ app.post('/api/screenshot', async (req, res) => {
     }
     const png = await captureScreenPng(req.body || {});
     const id = crypto.randomBytes(8).toString('hex');
-    const dir = path.join(PROJECT_ROOT, '.crank', 'shots');
+    const dir = path.join(DATA_ROOT, '.crank', 'shots');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, id + '.png'), png);
     res.json({ ok: true, path: '/shots/' + id + '.png' });
@@ -636,7 +663,7 @@ app.post('/api/responses/start', (req, res) => {
       res.status(404).json({ ok: false, error: 'No active selection' });
       return;
     }
-    const run = responseLog.beginResponse(PROJECT_ROOT, session, req.body?.shots);
+    const run = responseLog.beginResponse(DATA_ROOT, session, req.body?.shots);
     res.json({ ok: true, id: run.id, status: 'running' });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -646,8 +673,7 @@ app.post('/api/responses/start', (req, res) => {
 /** Saved Glean responses for this selection, including after a refresh. */
 app.post('/api/responses/match', (req, res) => {
   try {
-    const run = responseLog.findResponse(
-      PROJECT_ROOT,
+    const run = responseLog.findResponse(DATA_ROOT,
       req.body?.pageUrl || '',
       req.body?.nodes || []
     );
@@ -695,8 +721,7 @@ app.post('/api/variants', async (req, res) => {
         variantsInFlight.delete(lockId);
         try {
           if (req.body?.responseId) {
-            responseLog.failResponse(
-              PROJECT_ROOT,
+            responseLog.failResponse(DATA_ROOT,
               req.body.responseId,
               check.errors[0] || 'Complete Glean context'
             );
@@ -733,9 +758,9 @@ app.post('/api/variants', async (req, res) => {
     const updated = store.setVariants(session.id, variants);
     try {
       if (req.body?.responseId) {
-        responseLog.completeResponse(PROJECT_ROOT, req.body.responseId, variants);
+        responseLog.completeResponse(DATA_ROOT, req.body.responseId, variants);
       } else {
-        responseLog.recordResponse(PROJECT_ROOT, session, variants, req.body?.shots);
+        responseLog.recordResponse(DATA_ROOT, session, variants, req.body?.shots);
       }
     } catch (logErr) {
       console.error('[Crank] response log failed:', logErr.message);
@@ -754,7 +779,7 @@ app.post('/api/variants', async (req, res) => {
     console.error('[Crank] Glean propose failed:', err.message);
     try {
       if (req.body?.responseId) {
-        responseLog.failResponse(PROJECT_ROOT, req.body.responseId, err.message);
+        responseLog.failResponse(DATA_ROOT, req.body.responseId, err.message);
       }
     } catch (logErr) {
       console.error('[Crank] response log failed:', logErr.message);
@@ -1294,7 +1319,7 @@ wss.on('connection', (socket, req) => {
           );
           const updated = store.setVariants(session.id, variants);
           try {
-            responseLog.recordResponse(PROJECT_ROOT, session, variants);
+            responseLog.recordResponse(DATA_ROOT, session, variants);
           } catch (logErr) {
             console.error('[Crank] response log failed:', logErr.message);
           }
@@ -1499,7 +1524,7 @@ server.on('error', (err) => {
 
 server.listen(PORT, HOST, () => {
   try {
-    responseLog.settleStaleRuns(PROJECT_ROOT, activeResponseIds);
+    responseLog.settleStaleRuns(DATA_ROOT, activeResponseIds);
   } catch (err) {
     console.error('[Crank] could not settle stale history:', err.message);
   }

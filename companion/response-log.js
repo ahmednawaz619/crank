@@ -117,6 +117,8 @@ function completeResponse(projectRoot, id, variants) {
   const list = Array.isArray(variants) ? variants : [];
   run.completedAt = new Date().toISOString();
   run.variants = list;
+  const withTable = list.find((v) => v && v.agentTable);
+  if (withTable) run.table = String(withTable.agentTable);
   if (!list.length) {
     run.status = 'expired';
     run.error = 'No response';
