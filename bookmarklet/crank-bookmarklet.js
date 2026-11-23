@@ -352,6 +352,8 @@
   let previewedVariantId = null;
   let previewRestore = [];
   const historyStringMap = {};
+  let companionOffline = false;
+  let historyShowingCache = false;
   let pageSenseTimer = null;
   /** Bumps on each Ask Glean; stale WS progress after variants must not reopen thinking. */
   let gleanEpoch = 0;
@@ -405,6 +407,11 @@
   const GLEAN_REQUIRED_MSG = 'This field is required.';
 
   let viewedRequestId = null;
+  let returnToHistory = false;
+  let historyOpenToken = 0;
+  let historyDetailRun = null;
+  let historyScrollTop = 0;
+  let pendingHistoryScroll = null;
   const liveRequests = {};
 
   function formatGleanDraftFromSelection() {
@@ -820,7 +827,7 @@
       if (isChecked && !check) {
         item.insertAdjacentHTML(
           'beforeend',
-          '<svg class="vp-menu-item__check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12L9 17L20 6"/></svg>'
+          '<svg class="vp-menu-item__check" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.4697 6.46973C18.7626 6.17684 19.2373 6.17684 19.5302 6.46973C19.8231 6.76262 19.8231 7.23738 19.5302 7.53028L9.53022 17.5303C9.23732 17.8232 8.76256 17.8232 8.46967 17.5303L4.46967 13.5303C4.17678 13.2374 4.17678 12.7626 4.46967 12.4697C4.76256 12.1768 5.23732 12.1768 5.53022 12.4697L8.99994 15.9395L18.4697 6.46973Z" fill="currentColor"/></svg>'
         );
       } else if (!isChecked && check) {
         check.remove();
@@ -1210,23 +1217,6 @@
   }
 
 
-  function buildGleanOptionsHtml(ui) {
-    const field = ui.vpFieldHtml;
-    const select = ui.vpFieldSelectHtml || ui.vpSelectHtml;
-    const countOpts = [2, 3, 4, 5, 6, 7].map(function (n) {
-      return {
-        value: String(n),
-        label: String(n),
-        selected: n === DEFAULT_GLEAN_OPTION_COUNT
-      };
-    });
-    return field(
-      'Max alternatives to show',
-      select({ id: 'vc-option-count' }, '', { options: countOpts, width: 'calc(4.75rem + 8px)' }),
-      { layout: 'inline', className: 'vp-field--option-count' }
-    );
-  }
-
   function buildGleanContextFormHtml(ui) {
     const field = ui.vpFieldHtml;
     const select = ui.vpFieldSelectHtml || ui.vpSelectHtml;
@@ -1433,7 +1423,7 @@
   }
 
   function getGleanOptionCount() {
-    const sel = panel && panel.querySelector('#vc-option-count');
+    const sel = panel && panel.querySelector('#vc-settings-option-count');
     const raw = sel ? sel.value : localStorage.getItem(OPTION_COUNT_KEY);
     const n = parseInt(String(raw || DEFAULT_GLEAN_OPTION_COUNT), 10);
     if (!Number.isFinite(n)) return DEFAULT_GLEAN_OPTION_COUNT;
@@ -1458,11 +1448,17 @@
       ev.stopPropagation();
       let node = ev.target && ev.target.nodeType === 1 ? ev.target : ev.target && ev.target.parentElement;
       while (node && node !== panel) {
-        if (node.scrollHeight > node.clientHeight + 1) {
-          const oy = window.getComputedStyle(node).overflowY;
-          if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') {
-            node.scrollTop += ev.deltaY;
-            if (ev.deltaX) node.scrollLeft += ev.deltaX;
+        const canY = node.scrollHeight > node.clientHeight + 1;
+        const canX = node.scrollWidth > node.clientWidth + 1;
+        if (canY || canX) {
+          const cs = window.getComputedStyle(node);
+          const sc = function (o) {
+            return o === 'auto' || o === 'scroll' || o === 'overlay';
+          };
+          if ((canY && sc(cs.overflowY)) || (canX && sc(cs.overflowX))) {
+            const dx = ev.deltaX || (ev.shiftKey && !canY ? ev.deltaY : 0);
+            if (canY && sc(cs.overflowY) && !(ev.shiftKey && !ev.deltaX)) node.scrollTop += ev.deltaY;
+            if (dx && canX && sc(cs.overflowX)) node.scrollLeft += dx;
             return;
           }
         }
@@ -1540,20 +1536,6 @@
 
   let companionRetryTimer = null;
 
-  function companionDiagnosePrompt() {
-    return [
-      'The Crank companion is offline. The panel cannot reach it at ' + COMPANION_HTTP + '.',
-      '',
-      'Diagnose why it is down, then start it and leave it running.',
-      '',
-      '1. Check whether anything is listening on 127.0.0.1:3344.',
-      '2. From the Crank project root, start it with: ' + companionStartCommand(),
-      '3. Confirm ' + COMPANION_HTTP + '/health returns ok.',
-      '4. If it fails, read the companion output and fix the cause. Do not print secrets from .env.',
-      '5. Leave the companion running so the panel can reconnect on its own.'
-    ].join('\n');
-  }
-
   function stopCompanionAutoRetry() {
     if (companionRetryTimer) {
       clearInterval(companionRetryTimer);
@@ -1569,12 +1551,17 @@
         stopCompanionAutoRetry();
         return;
       }
-      const probe =
-        typeof window.__crankProbeCompanion === 'function'
-          ? window.__crankProbeCompanion
-          : null;
-      if (probe) probe();
-    }, 3000);
+      reconnectCompanionInBackground();
+    }, 4000);
+  }
+
+  function setCompanionOfflineState(offline) {
+    const changed = companionOffline !== offline;
+    companionOffline = offline;
+    if (!panel) return;
+    if (offline) panel.setAttribute('data-crank-offline', '1');
+    else panel.removeAttribute('data-crank-offline');
+    if (changed && panel.getAttribute('data-crank-view') === 'history') loadHistoryList();
   }
 
   function showCompanionOfflineUI() {
@@ -1585,6 +1572,8 @@
       box.classList.remove('crank-hidden');
       box.style.display = 'block';
     }
+    setCompanionOfflineState(true);
+    syncOfflineCommandText();
     startCompanionAutoRetry();
   }
 
@@ -1595,6 +1584,7 @@
       box.classList.add('crank-hidden');
       box.style.display = 'none';
     }
+    setCompanionOfflineState(false);
   }
 
   function setAgentStatus(mode, text) {
@@ -1611,18 +1601,47 @@
         : 'Agent running');
   }
 
-  async function retryCompanionConnection() {
-    setStatus('Checking companion…');
-    showToast('Checking companion…', 'info');
+  let companionReconnectBusy = false;
+  let companionCopyTimer = null;
+
+  function syncOfflineCommandText() {
+    const code = panel && panel.querySelector('#vc-companion-command');
+    if (code) code.textContent = companionStartCommand();
+  }
+
+  async function copyCompanionCommand() {
+    const btnEl = panel && panel.querySelector('#vc-companion-copy');
+    const ok = await copyTextToClipboard(companionStartCommand());
+    if (!ok) {
+      showToast('Could not copy — select the command above', 'error');
+      return;
+    }
+    if (!btnEl) return;
+    if (companionCopyTimer) clearTimeout(companionCopyTimer);
+    btnEl.textContent = 'Copied';
+    companionCopyTimer = setTimeout(function () {
+      companionCopyTimer = null;
+      btnEl.textContent = 'Copy command';
+    }, 1500);
+  }
+
+  /** Background reconnect: probe /health (3s timeout) while the offline banner is shown. */
+  async function reconnectCompanionInBackground() {
+    if (companionReconnectBusy) return;
     const probe =
       typeof window.__crankProbeCompanion === 'function'
         ? window.__crankProbeCompanion
         : null;
-    if (!probe) {
-      showToast('Companion check unavailable — reload the page', 'error');
-      return;
+    if (!probe) return;
+    companionReconnectBusy = true;
+    let ok = false;
+    try {
+      ok = await probe();
+    } catch (_) {
+      ok = false;
+    } finally {
+      companionReconnectBusy = false;
     }
-    const ok = await probe();
     if (ok) {
       hideCompanionOfflineUI();
       showToast('Companion connected — you can Ask Glean', 'ok');
@@ -1630,9 +1649,10 @@
       try {
         connectWs();
       } catch (_) {}
+      try {
+        if (panel && panel.getAttribute('data-crank-view') === 'history') loadHistoryList();
+      } catch (_) {}
       checkPanelUpdate(COMPANION_HTTP, { quiet: true });
-    } else {
-      showToast('Still offline. Crank will keep checking.', 'error');
     }
   }
 
@@ -1779,6 +1799,15 @@
     return assetUrl('glean-logo.png', '/ui/glean-logo.png');
   }
 
+  function fabLogoMaskStyle() {
+    const url = String(getFabLogoUrl())
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '%22')
+      .replace(/</g, '%3C')
+      .replace(/>/g, '%3E');
+    return '--crank-fab-logo:url(&quot;' + url + '&quot;)';
+  }
+
   function isCrankChrome(el) {
     if (!(el instanceof Element)) return false;
     return !!(
@@ -1786,33 +1815,49 @@
       el.closest('#vp-crank-launcher') ||
       el.closest('#vp-crank-fab') ||
       el.closest('#vp-crank-select-hint') ||
+      el.closest('#vp-crank-tooltip') ||
+      el.closest('#vp-crank-reopen') ||
       el.id === 'crank-highlight'
     );
   }
 
+  function eventInCrankChrome(ev) {
+    const path = ev && typeof ev.composedPath === 'function' ? ev.composedPath() : [];
+    for (let i = 0; i < path.length; i += 1) {
+      const node = path[i];
+      if (node === panel || node === launcher) return true;
+      if (node instanceof Element && isCrankChrome(node)) return true;
+    }
+    const target = ev && ev.target;
+    if (target instanceof Element) {
+      // A node re-rendered mid-click (e.g. a history card) is detached; never treat it as page copy.
+      if (!target.isConnected) return true;
+      if ((panel && panel.contains(target)) || (launcher && launcher.contains(target))) return true;
+    }
+    return false;
+  }
+
   function toolIcon(name) {
     const open =
-      '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">';
+      '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">';
     const close = '</svg>';
-    if (name === 'select') {
-      return open + '<path d="M5.2 3.1a1 1 0 0 0-1.1 1.35l5.4 14.2a1 1 0 0 0 1.86.08l1.7-4.35 4.55-1.52a1 1 0 0 0 .08-1.86L6.5 3.2a1 1 0 0 0-1.3-.1Z"/>' + close;
-    }
-    if (name === 'history') {
-      return open + '<path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25Zm.75 4.5a.75.75 0 0 0-1.5 0v5.25c0 .2.08.39.22.53l3.25 3.25a.75.75 0 1 0 1.06-1.06l-3.03-3.03V6.75Z" clip-rule="evenodd"/>' + close;
-    }
-    if (name === 'settings') {
-      return open + '<path fill-rule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 5.89a8.094 8.094 0 0 0-1.784.94l-1.8-.9a1.875 1.875 0 0 0-2.322.652l-.9 1.56a1.875 1.875 0 0 0 .394 2.317l1.5 1.3a8.16 8.16 0 0 0 0 2.482l-1.5 1.3a1.875 1.875 0 0 0-.394 2.317l.9 1.56c.48.83 1.51 1.17 2.322.652l1.8-.9c.55.4 1.15.72 1.784.94l.178 2.073c.151.904.933 1.567 1.85 1.567h1.844c.917 0 1.699-.663 1.85-1.567l.178-2.073a8.094 8.094 0 0 0 1.784-.94l1.8.9a1.875 1.875 0 0 0 2.322-.652l.9-1.56a1.875 1.875 0 0 0-.394-2.317l-1.5-1.3a8.16 8.16 0 0 0 0-2.482l1.5-1.3a1.875 1.875 0 0 0 .394-2.317l-.9-1.56a1.875 1.875 0 0 0-2.322-.652l-1.8.9a8.094 8.094 0 0 0-1.784-.94l-.178-2.073A1.875 1.875 0 0 0 12.922 2.25h-1.844ZM12 15.75a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z" clip-rule="evenodd"/>' + close;
-    }
-    if (name === 'dock') {
-      return open + '<path d="M5.25 4.5A2.25 2.25 0 0 0 3 6.75v10.5A2.25 2.25 0 0 0 5.25 19.5h13.5A2.25 2.25 0 0 0 21 17.25V6.75A2.25 2.25 0 0 0 18.75 4.5H5.25Zm9 1.5v12H18.75a.75.75 0 0 0 .75-.75V6.75a.75.75 0 0 0-.75-.75H14.25Z"/>' + close;
-    }
-    if (name === 'undock') {
-      return open + '<path d="M5.25 4.5A2.25 2.25 0 0 0 3 6.75v10.5A2.25 2.25 0 0 0 5.25 19.5h6a.75.75 0 0 0 0-1.5h-6a.75.75 0 0 1-.75-.75V6.75A.75.75 0 0 1 5.25 6h13.5a.75.75 0 0 1 .75.75v3a.75.75 0 0 0 1.5 0v-3A2.25 2.25 0 0 0 18.75 4.5H5.25Z"/><path d="M14.25 13.5a.75.75 0 0 1 .75-.75h4.19l-1.22-1.22a.75.75 0 1 1 1.06-1.06l2.5 2.5a.75.75 0 0 1 0 1.06l-2.5 2.5a.75.75 0 1 1-1.06-1.06l1.22-1.22H15a.75.75 0 0 1-.75-.75Z"/>' + close;
-    }
-    if (name === 'clear') {
-      return open + '<path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25Zm-1.72 6.97a.75.75 0 1 0-1.06 1.06L10.94 12l-1.72 1.72a.75.75 0 1 0 1.06 1.06L12 13.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L13.06 12l1.72-1.72a.75.75 0 1 0-1.06-1.06L12 10.94 10.28 9.22Z" clip-rule="evenodd"/>' + close;
-    }
-    return open + '<path d="M6.22 6.22a.75.75 0 0 1 1.06 0L12 10.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L13.06 12l4.72 4.72a.75.75 0 1 1-1.06 1.06L12 13.06l-4.72 4.72a.75.75 0 0 1-1.06-1.06L10.94 12 6.22 7.28a.75.75 0 0 1 0-1.06Z"/>' + close;
+    const paths = {
+      select:
+        '<path d="M16.5744 19.1999L12.6361 15.2616L11.4334 16.4643C10.2022 17.6955 9.58656 18.3111 8.92489 18.1658C8.26322 18.0204 7.96225 17.2035 7.3603 15.5696L5.3527 10.1205C4.15187 6.86106 3.55146 5.23136 4.39141 4.39141C5.23136 3.55146 6.86106 4.15187 10.1205 5.35271L15.5696 7.3603C17.2035 7.96225 18.0204 8.26322 18.1658 8.92489C18.3111 9.58656 17.6955 10.2022 16.4643 11.4334L15.2616 12.6361L19.1999 16.5744C19.6077 16.9821 19.8116 17.186 19.9058 17.4135C20.0314 17.7168 20.0314 18.0575 19.9058 18.3608C19.8116 18.5882 19.6077 18.7921 19.1999 19.1999C18.7921 19.6077 18.5882 19.8116 18.3608 19.9058C18.0575 20.0314 17.7168 20.0314 17.4135 19.9058C17.186 19.8116 16.9821 19.6077 16.5744 19.1999Z" fill="currentColor"/>',
+      history:
+        '<path d="M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2ZM12 7.25C11.5858 7.25 11.25 7.58579 11.25 8V12C11.25 12.1989 11.3291 12.3896 11.4697 12.5303L13.9697 15.0303C14.2626 15.3232 14.7374 15.3232 15.0303 15.0303C15.3232 14.7374 15.3232 14.2626 15.0303 13.9697L12.75 11.6895V8C12.75 7.58579 12.4142 7.25 12 7.25Z" fill-rule="evenodd" clip-rule="evenodd" fill="currentColor"/>',
+      settings:
+        '<path d="M14.2788 2.15224C13.9085 2 13.439 2 12.5 2C11.561 2 11.0915 2 10.7212 2.15224C10.2274 2.35523 9.83509 2.74458 9.63056 3.23463C9.53719 3.45834 9.50065 3.7185 9.48635 4.09799C9.46534 4.65568 9.17716 5.17189 8.69017 5.45093C8.20318 5.72996 7.60864 5.71954 7.11149 5.45876C6.77318 5.2813 6.52789 5.18262 6.28599 5.15102C5.75609 5.08178 5.22018 5.22429 4.79616 5.5472C4.47814 5.78938 4.24339 6.1929 3.7739 6.99993C3.30441 7.80697 3.06967 8.21048 3.01735 8.60491C2.94758 9.1308 3.09118 9.66266 3.41655 10.0835C3.56506 10.2756 3.77377 10.437 4.0977 10.639C4.57391 10.936 4.88032 11.4419 4.88029 12C4.88026 12.5581 4.57386 13.0639 4.0977 13.3608C3.77372 13.5629 3.56497 13.7244 3.41645 13.9165C3.09108 14.3373 2.94749 14.8691 3.01725 15.395C3.06957 15.7894 3.30432 16.193 3.7738 17C4.24329 17.807 4.47804 18.2106 4.79606 18.4527C5.22008 18.7756 5.75599 18.9181 6.28589 18.8489C6.52778 18.8173 6.77305 18.7186 7.11133 18.5412C7.60852 18.2804 8.2031 18.27 8.69012 18.549C9.17714 18.8281 9.46533 19.3443 9.48635 19.9021C9.50065 20.2815 9.53719 20.5417 9.63056 20.7654C9.83509 21.2554 10.2274 21.6448 10.7212 21.8478C11.0915 22 11.561 22 12.5 22C13.439 22 13.9085 22 14.2788 21.8478C14.7726 21.6448 15.1649 21.2554 15.3694 20.7654C15.4628 20.5417 15.4994 20.2815 15.5137 19.902C15.5347 19.3443 15.8228 18.8281 16.3098 18.549C16.7968 18.2699 17.3914 18.2804 17.8886 18.5412C18.2269 18.7186 18.4721 18.8172 18.714 18.8488C19.2439 18.9181 19.7798 18.7756 20.2038 18.4527C20.5219 18.2105 20.7566 17.807 21.2261 16.9999C21.6956 16.1929 21.9303 15.7894 21.9827 15.395C22.0524 14.8691 21.9088 14.3372 21.5835 13.9164C21.4349 13.7243 21.2262 13.5628 20.9022 13.3608C20.4261 13.0639 20.1197 12.558 20.1197 11.9999C20.1197 11.4418 20.4261 10.9361 20.9022 10.6392C21.2263 10.4371 21.435 10.2757 21.5836 10.0835C21.9089 9.66273 22.0525 9.13087 21.9828 8.60497C21.9304 8.21055 21.6957 7.80703 21.2262 7C20.7567 6.19297 20.522 5.78945 20.2039 5.54727C19.7799 5.22436 19.244 5.08185 18.7141 5.15109C18.4722 5.18269 18.2269 5.28136 17.8887 5.4588C17.3915 5.71959 16.7969 5.73002 16.3099 5.45096C15.8229 5.17191 15.5347 4.65566 15.5136 4.09794C15.4993 3.71848 15.4628 3.45833 15.3694 3.23463C15.1649 2.74458 14.7726 2.35523 14.2788 2.15224ZM12.5 15C14.1695 15 15.5228 13.6569 15.5228 12C15.5228 10.3431 14.1695 9 12.5 9C10.8305 9 9.47716 10.3431 9.47716 12C9.47716 13.6569 10.8305 15 12.5 15Z" fill-rule="evenodd" clip-rule="evenodd" fill="currentColor"/>',
+      dock:
+        '<path d="M2 18C2 16.1144 2 15.1716 2.58579 14.5858C3.17157 14 4.11438 14 6 14C7.88562 14 8.82843 14 9.41421 14.5858C10 15.1716 10 16.1144 10 18C10 19.8856 10 20.8284 9.41421 21.4142C8.82843 22 7.88562 22 6 22C4.11438 22 3.17157 22 2.58579 21.4142C2 20.8284 2 19.8856 2 18Z" fill="currentColor"/><path d="M3.46447 3.46447C2 4.92893 2 7.28595 2 12C2 12.3956 2 12.7746 2.00087 13.1378C2.50896 12.8047 3.06882 12.6588 3.6056 12.5866C4.25122 12.4998 5.04488 12.4999 5.91052 12.5H6.08951C6.95514 12.4999 7.74881 12.4998 8.39443 12.5866C9.10539 12.6822 9.85684 12.9071 10.4749 13.5251C11.0929 14.1432 11.3178 14.8946 11.4134 15.6056C11.5002 16.2512 11.5001 17.0449 11.5 17.9105V18.0895C11.5001 18.9552 11.5002 19.7488 11.4134 20.3944C11.3412 20.9312 11.1954 21.491 10.8622 21.9991C11.2255 22 11.6044 22 12 22C16.714 22 19.0711 22 20.5355 20.5355C22 19.0711 22 16.714 22 12C22 7.28595 22 4.92893 20.5355 3.46447C19.0711 2 16.714 2 12 2C7.28595 2 4.92893 2 3.46447 3.46447ZM13.25 6.25C12.8358 6.25 12.5 6.58579 12.5 7C12.5 7.41421 12.8358 7.75 13.25 7.75H15.1893L11.4697 11.4697C11.1768 11.7626 11.1768 12.2374 11.4697 12.5303C11.7626 12.8232 12.2374 12.8232 12.5303 12.5303L16.25 8.81066V10.75C16.25 11.1642 16.5858 11.5 17 11.5C17.4142 11.5 17.75 11.1642 17.75 10.75V7C17.75 6.58579 17.4142 6.25 17 6.25H13.25Z" fill-rule="evenodd" clip-rule="evenodd" fill="currentColor"/>',
+      undock:
+        '<path d="M2 18C2 16.1144 2 15.1716 2.58579 14.5858C3.17157 14 4.11438 14 6 14C7.88562 14 8.82843 14 9.41421 14.5858C10 15.1716 10 16.1144 10 18C10 19.8856 10 20.8284 9.41421 21.4142C8.82843 22 7.88562 22 6 22C4.11438 22 3.17157 22 2.58579 21.4142C2 20.8284 2 19.8856 2 18Z" fill="currentColor"/><path d="M3.46447 3.46447C2 4.92893 2 7.28595 2 12C2 12.3956 2 12.7746 2.00087 13.1378C2.50896 12.8047 3.06882 12.6588 3.6056 12.5866C4.25122 12.4998 5.04488 12.4999 5.91052 12.5H6.08951C6.95514 12.4999 7.74881 12.4998 8.39443 12.5866C9.10539 12.6822 9.85684 12.9071 10.4749 13.5251C11.0929 14.1432 11.3178 14.8946 11.4134 15.6056C11.5002 16.2512 11.5001 17.0449 11.5 17.9105V18.0895C11.5001 18.9552 11.5002 19.7488 11.4134 20.3944C11.3412 20.9312 11.1954 21.491 10.8622 21.9991C11.2255 22 11.6044 22 12 22C16.714 22 19.0711 22 20.5355 20.5355C22 19.0711 22 16.714 22 12C22 7.28595 22 4.92893 20.5355 3.46447C19.0711 2 16.714 2 12 2C7.28595 2 4.92893 2 3.46447 3.46447ZM15.75 12.75C16.1642 12.75 16.5 12.4142 16.5 12C16.5 11.5858 16.1642 11.25 15.75 11.25H13.8107L17.5303 7.53033C17.8232 7.23744 17.8232 6.76256 17.5303 6.46967C17.2374 6.17678 16.7626 6.17678 16.4697 6.46967L12.75 10.1893V8.25C12.75 7.83579 12.4142 7.5 12 7.5C11.5858 7.5 11.25 7.83579 11.25 8.25V12C11.25 12.4142 11.5858 12.75 12 12.75H15.75Z" fill-rule="evenodd" clip-rule="evenodd" fill="currentColor"/>',
+      clear:
+        '<path d="M22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12ZM8.96963 8.96965C9.26252 8.67676 9.73739 8.67676 10.0303 8.96965L12 10.9393L13.9696 8.96967C14.2625 8.67678 14.7374 8.67678 15.0303 8.96967C15.3232 9.26256 15.3232 9.73744 15.0303 10.0303L13.0606 12L15.0303 13.9696C15.3232 14.2625 15.3232 14.7374 15.0303 15.0303C14.7374 15.3232 14.2625 15.3232 13.9696 15.0303L12 13.0607L10.0303 15.0303C9.73742 15.3232 9.26254 15.3232 8.96965 15.0303C8.67676 14.7374 8.67676 14.2625 8.96965 13.9697L10.9393 12L8.96963 10.0303C8.67673 9.73742 8.67673 9.26254 8.96963 8.96965Z" fill-rule="evenodd" clip-rule="evenodd" fill="currentColor"/>',
+      close:
+        '<path d="M18.4765 4.46967C18.7694 4.17683 19.2442 4.1768 19.5371 4.46967C19.8299 4.76255 19.8299 5.23734 19.5371 5.53022L13.0634 12.0029L19.5302 18.4697C19.823 18.7626 19.8231 19.2374 19.5302 19.5302C19.2374 19.8231 18.7626 19.823 18.4697 19.5302L12.0029 13.0634L5.53705 19.5302C5.24417 19.823 4.76938 19.823 4.47651 19.5302C4.18363 19.2373 4.18367 18.7626 4.47651 18.4697L10.9423 12.0029L4.46967 5.53022C4.17678 5.23732 4.17678 4.76256 4.46967 4.46967C4.76256 4.17678 5.23732 4.17678 5.53022 4.46967L12.0029 10.9423L18.4765 4.46967Z" fill="currentColor"/>'
+    };
+    return open + (paths[name] || paths.close) + close;
   }
 
   function ensureFab() {
@@ -1849,9 +1894,9 @@
       '</button>' +
       '</div>' +
       '<button type="button" id="vp-crank-fab" class="vp-crank-fab" aria-label="Open Crank">' +
-      '<img src="' +
-      getFabLogoUrl().replace(/"/g, '&quot;') +
-      '" alt="" draggable="false" width="22" height="22" />' +
+      '<span class="vp-crank-fab-mark" style="' +
+      fabLogoMaskStyle() +
+      '"></span>' +
       '</button>' +
       '</div>';
     fab = launcher.querySelector('#vp-crank-fab');
@@ -1931,13 +1976,14 @@
   function positionLauncher() {
     if (!launcher) return;
     launcher.style.left = '';
+    launcher.style.right = '';
     launcher.style.transform = '';
     if (launcher.classList.contains('is-in-panel')) {
-      launcher.style.right = '';
+      launcher.classList.remove('is-beside-panel');
       launcher.style.bottom = '';
     } else {
       const floatingPanel = !!(panel && panel.parentNode && !readPanelDocked());
-      launcher.style.right = floatingPanel ? 'calc(' + PANEL_DOCK_WIDTH + ' + 20px)' : '20px';
+      launcher.classList.toggle('is-beside-panel', floatingPanel);
       launcher.style.bottom = '20px';
     }
     if (selectHint && selectHint.style.display !== 'none') {
@@ -2012,6 +2058,7 @@
   }
 
   function activateTool(tool) {
+    returnToHistory = false;
     if (tool === 'close') {
       collapseToolbar();
       return;
@@ -2092,6 +2139,7 @@
   }
 
   function openPanelAfterSelection() {
+    returnToHistory = false;
     uiMode = 'panel';
     setFabActive(false);
     hideSelectHint();
@@ -2129,7 +2177,7 @@
     glean.disabled = !!gleanActiveEpoch;
     if (!online) {
       glean.title =
-        'Agent offline. Crank keeps checking, or use Diagnose with agent.';
+        'Agent offline. Crank keeps checking.';
     } else if (!sessionId) {
       glean.title = 'Select copy on the page first';
     } else {
@@ -2171,7 +2219,6 @@
     }
     const count = String(getGleanOptionCount());
     setFieldSelectValue('vc-settings-option-count', count);
-    setFieldSelectValue('vc-option-count', count);
     initDepthTune();
   }
 
@@ -2205,13 +2252,6 @@
   function refreshPagePresence() {
     if (!panel) return;
     const present = visibleCopySet();
-    const list = panel.querySelector('#vc-history-list');
-    if (list) {
-      list.querySelectorAll('[data-history-preview]').forEach(function (btn) {
-        const id = btn.getAttribute('data-history-preview');
-        btn.hidden = !copiesAreVisible(historyStringMap[id], present);
-      });
-    }
     const box = panel.querySelector('#vc-variants');
     if (box) {
       box.querySelectorAll('[data-variant-preview]').forEach(function (btn) {
@@ -2255,25 +2295,113 @@
     window.addEventListener('popstate', schedulePageSense);
   }
 
+  const HISTORY_CACHE_PREFIX = 'crank:history-cache:v1:';
+  const HISTORY_CACHE_LIMIT = 50;
+
+  function historyCacheKey() {
+    return HISTORY_CACHE_PREFIX + getPanelChannel() + ':' + COMPANION_HTTP;
+  }
+
+  function readHistoryCache() {
+    try {
+      const raw = localStorage.getItem(historyCacheKey());
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (!parsed || !Array.isArray(parsed.runs)) return { runs: [], details: {} };
+      return {
+        runs: parsed.runs,
+        details: parsed.details && typeof parsed.details === 'object' ? parsed.details : {},
+        savedAt: parsed.savedAt || 0
+      };
+    } catch (_) {
+      return { runs: [], details: {} };
+    }
+  }
+
+  function writeHistoryCache(cache) {
+    const runs = (cache.runs || []).slice(0, HISTORY_CACHE_LIMIT);
+    const keep = {};
+    runs.forEach(function (run) {
+      if (run && run.id && cache.details && cache.details[run.id]) keep[run.id] = cache.details[run.id];
+    });
+    const payload = { runs: runs, details: keep, savedAt: Date.now() };
+    try {
+      localStorage.setItem(historyCacheKey(), JSON.stringify(payload));
+    } catch (_) {
+      try {
+        payload.details = {};
+        localStorage.setItem(historyCacheKey(), JSON.stringify(payload));
+      } catch (__) {}
+    }
+  }
+
+  function saveHistoryListToCache(runs) {
+    const cache = readHistoryCache();
+    cache.runs = runs;
+    writeHistoryCache(cache);
+  }
+
+  function saveHistoryDetailToCache(run) {
+    if (!run || !run.id || run.status === 'running') return;
+    const cache = readHistoryCache();
+    cache.details[run.id] = run;
+    writeHistoryCache(cache);
+  }
+
+  function cachedHistoryDetail(id) {
+    return readHistoryCache().details[id] || null;
+  }
+
+  function renderCachedHistory(list) {
+    const cache = readHistoryCache();
+    if (!cache.runs.length) {
+      historyShowingCache = false;
+      list.innerHTML = '<p class="vc-tool-lead">History is unavailable. Start the companion and try again.</p>';
+      return;
+    }
+    historyShowingCache = true;
+    renderHistoryRuns(list, cache.runs, { offline: true, details: cache.details });
+  }
+
   async function loadHistoryList() {
     const list = panel && panel.querySelector('#vc-history-list');
     if (!list) return;
+    if (companionOffline) {
+      renderCachedHistory(list);
+      return;
+    }
     list.innerHTML = '<p class="vc-tool-lead">Loading history…</p>';
     try {
       const resp = await fetch(COMPANION_HTTP + '/api/responses', {
         cache: 'no-store',
         headers: authHeaders()
       });
+      if (!resp.ok) throw new Error('History request failed');
       const data = await resp.json();
       const runs = data && Array.isArray(data.runs) ? data.runs : [];
+      saveHistoryListToCache(runs);
+      historyShowingCache = false;
       if (!runs.length) {
         list.innerHTML = '<p class="vc-tool-lead vc-history-empty">No agent searches yet.</p>';
         return;
       }
-      const escape = UI().escapeHtml || function (v) {
-        return String(v == null ? '' : v);
-      };
-      list.innerHTML = runs
+      renderHistoryRuns(list, runs, { offline: false });
+    } catch (err) {
+      renderCachedHistory(list);
+    }
+  }
+
+  function renderHistoryRuns(list, runs, opts) {
+    const offline = !!(opts && opts.offline);
+    const details = (opts && opts.details) || {};
+    const escape = UI().escapeHtml || function (v) {
+      return String(v == null ? '' : v);
+    };
+    const offlineHint = 'Needs the companion. Start it to use this.';
+    list.innerHTML =
+      (offline
+        ? '<p class="vc-tool-lead vc-history-offline-note">Showing saved history. Companion is offline.</p>'
+        : '') +
+      runs
         .map(function (run) {
           const when = run.createdAt ? new Date(run.createdAt).toLocaleString() : '';
           const strings = Array.isArray(run.strings) ? run.strings.filter(Boolean) : [];
@@ -2293,29 +2421,33 @@
           const meta = running ? 'Running' : failed ? 'Failed' : silent ? 'No response' : when;
           const shots = run.shots || {};
           const rawShot = shots.context || shots.tight || '';
-          const src = rawShot.indexOf('/shots/') === 0 ? COMPANION_HTTP + rawShot : rawShot;
+          const fromCompanion = rawShot.indexOf('/shots/') === 0;
+          const src = fromCompanion ? (offline ? '' : COMPANION_HTTP + rawShot) : rawShot;
           const thumbs = src
-            ? '<img class="vc-history-shot" alt="" src="' + src + '" />'
+            ? '<img class="vc-history-shot" alt="" draggable="false" src="' + src + '" />'
             : '';
+          const unavailable = offline && !details[run.id];
           return (
             '<div role="button" tabindex="0" class="vc-history-card' +
             (single ? ' is-single-line' : '') +
             (running ? ' is-running' : '') +
             (silent ? ' is-expired' : '') +
+            (unavailable ? ' is-offline-unavailable' : '') +
             '" data-history-id="' +
             escape(run.id) +
             '" data-history-status="' +
             escape(run.status || 'ready') +
-            '">' +
-            '<button type="button" class="vc-history-open" data-history-preview="' +
-            escape(run.id) +
-            '" hidden aria-label="Preview these strings on this page">' +
-            '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>' +
-            '</button>' +
+            '"' +
+            (unavailable ? ' title="' + escape(offlineHint) + '"' : '') +
+            '>' +
             '<button type="button" class="vc-history-delete" data-history-delete="' +
             escape(run.id) +
-            '" aria-label="Delete">' +
-            '<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M5.7 2.2h4.6l.45.9h2.55v1.3H2.7V3.1h2.55l.45-.9zM4 5.1h8l-.55 8.05a1 1 0 0 1-1 .85H5.55a1 1 0 0 1-1-.85L4 5.1z"/></svg>' +
+            '"' +
+            (offline
+              ? ' disabled aria-disabled="true" title="' + escape(offlineHint) + '" aria-label="Delete (needs the companion)"'
+              : ' aria-label="Delete"') +
+            '>' +
+            '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" aria-hidden="true"><path fill="currentColor" d="M3 6.38597C3 5.90152 3.34538 5.50879 3.77143 5.50879L6.43567 5.50832C6.96502 5.49306 7.43202 5.11033 7.61214 4.54412C7.61688 4.52923 7.62232 4.51087 7.64185 4.44424L7.75665 4.05256C7.8269 3.81241 7.8881 3.60318 7.97375 3.41617C8.31209 2.67736 8.93808 2.16432 9.66147 2.03297C9.84457 1.99972 10.0385 1.99986 10.2611 2.00002H13.7391C13.9617 1.99986 14.1556 1.99972 14.3387 2.03297C15.0621 2.16432 15.6881 2.67736 16.0264 3.41617C16.1121 3.60318 16.1733 3.81241 16.2435 4.05256L16.3583 4.44424C16.3778 4.51087 16.3833 4.52923 16.388 4.54412C16.5682 5.11033 17.1278 5.49353 17.6571 5.50879H20.2286C20.6546 5.50879 21 5.90152 21 6.38597C21 6.87043 20.6546 7.26316 20.2286 7.26316H3.77143C3.34538 7.26316 3 6.87043 3 6.38597Z"/><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M11.5956 22.0001H12.4044C15.1871 22.0001 16.5785 22.0001 17.4831 21.1142C18.3878 20.2283 18.4803 18.7751 18.6654 15.8686L18.9321 11.6807C19.0326 10.1037 19.0828 9.31524 18.6289 8.81558C18.1751 8.31592 17.4087 8.31592 15.876 8.31592H8.12404C6.59127 8.31592 5.82488 8.31592 5.37105 8.81558C4.91722 9.31524 4.96744 10.1037 5.06788 11.6807L5.33459 15.8686C5.5197 18.7751 5.61225 20.2283 6.51689 21.1142C7.42153 22.0001 8.81289 22.0001 11.5956 22.0001ZM10.2463 12.1886C10.2051 11.7548 9.83753 11.4382 9.42537 11.4816C9.01321 11.525 8.71251 11.9119 8.75372 12.3457L9.25372 17.6089C9.29494 18.0427 9.66247 18.3593 10.0746 18.3159C10.4868 18.2725 10.7875 17.8856 10.7463 17.4518L10.2463 12.1886ZM14.5746 11.4816C14.9868 11.525 15.2875 11.9119 15.2463 12.3457L14.7463 17.6089C14.7051 18.0427 14.3375 18.3593 13.9254 18.3159C13.5132 18.2725 13.2125 17.8856 13.2537 17.4518L13.7537 12.1886C13.7949 11.7548 14.1625 11.4382 14.5746 11.4816Z"/></svg>' +
             '</button>' +
             (thumbs ? '<span class="vc-history-shots">' + thumbs + '</span>' : '') +
             '<span class="vc-history-preview">' +
@@ -2327,15 +2459,43 @@
           );
         })
         .join('');
-      refreshPagePresence();
-    } catch (err) {
-      list.innerHTML = '<p class="vc-tool-lead">History is unavailable. Start the companion and try again.</p>';
+    refreshPagePresence();
+    if (pendingHistoryScroll != null) {
+      const scroller = panel.querySelector('.vp-panel-body');
+      if (scroller) scroller.scrollTop = pendingHistoryScroll;
+      pendingHistoryScroll = null;
     }
+  }
+
+  function historyShotSrc(run) {
+    const shots = (run && run.shots) || {};
+    const rawShot = shots.context || shots.tight || '';
+    if (!rawShot) return '';
+    if (rawShot.indexOf('/shots/') !== 0) return rawShot;
+    return companionOffline ? '' : COMPANION_HTTP + rawShot;
+  }
+
+  function prependHistoryShot(run) {
+    const src = historyShotSrc(run);
+    const box = panel && panel.querySelector('#vc-variants');
+    if (!src || !box) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'vc-history-detail-shot';
+    const img = document.createElement('img');
+    img.className = 'vc-history-shot';
+    img.alt = '';
+    img.addEventListener('error', function () {
+      if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+    });
+    img.src = src;
+    wrap.appendChild(img);
+    box.insertBefore(wrap, box.firstChild);
   }
 
   function showHistoryRequest(run) {
     if (!run || !panel) return;
     viewedRequestId = run.id;
+    returnToHistory = true;
     activeTool = 'select';
     stopSelect();
     hideSelectHint();
@@ -2343,10 +2503,7 @@
     setPanelSurface('crank');
     syncLauncher();
     if (run.status === 'error' || run.status === 'expired') {
-      renderVariants([]);
-      hideThinking();
-      setPanelStep('ask');
-      setStatus(run.status === 'expired' ? 'No response' : run.error || 'This request failed');
+      showHistoryEmptyDetail(run);
       return;
     }
     if (run.status === 'running') {
@@ -2366,19 +2523,252 @@
       return;
     }
     if (!Array.isArray(run.variants) || !run.variants.length) {
-      renderVariants([]);
-      hideThinking();
-      setPanelStep('ask');
-      setStatus('No response');
+      showHistoryEmptyDetail(run);
       return;
     }
     hideThinking();
     (run.variants || []).forEach(function (variant) {
       if (variant) variant.pageUrl = run.pageUrl || '';
     });
+    if (run.table && run.variants[0] && !run.variants[0].agentTable) {
+      run.variants[0].agentTable = run.table;
+    }
     renderVariants(run.variants);
+    prependHistoryShot(run);
     setPanelStep('results');
     scheduleAutogrowSync(panel);
+  }
+
+  const HISTORY_CONTEXT_PREFIX = 'crank:history-context:v1:';
+  const HISTORY_CONTEXT_FIELDS = [
+    ['humanStrings', 'Your string(s)', '#vc-glean-strings'],
+    ['componentType', 'Component type', ''],
+    ['timing', 'Timing', ''],
+    ['userType', 'Is this for a fleet user or driver?', ''],
+    ['entryPoint', 'How did they get to this screen?', '#vc-glean-entry-point'],
+    ['userGoal', 'What is the user trying to do?', '#vc-glean-user-goal'],
+    ['nextStep', 'What happens next?', '#vc-glean-next-step'],
+    ['actionOptions', 'What are the action options for the user?', '#vc-glean-action-options'],
+    ['surroundingStrings', 'What do the other existing strings around the component say?', '#vc-glean-surrounding'],
+    ['prdLink', 'PRD/PDP link', '#vc-glean-prd'],
+    ['additionalContext', 'Additional context', '#vc-glean-additional']
+  ];
+
+  function historyContextKey() {
+    return HISTORY_CONTEXT_PREFIX + getPanelChannel() + ':' + COMPANION_HTTP;
+  }
+
+  function readHistoryContexts() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(historyContextKey()) || '{}');
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function saveHistoryContext(id, context) {
+    if (!id || !context) return;
+    const all = readHistoryContexts();
+    all[id] = { context: context, savedAt: Date.now() };
+    const ids = Object.keys(all).sort(function (a, b) {
+      return (all[b].savedAt || 0) - (all[a].savedAt || 0);
+    });
+    ids.slice(HISTORY_CACHE_LIMIT).forEach(function (stale) {
+      delete all[stale];
+    });
+    try {
+      localStorage.setItem(historyContextKey(), JSON.stringify(all));
+    } catch (_) {}
+  }
+
+  function historyContextFor(id) {
+    const entry = readHistoryContexts()[id];
+    return entry && entry.context && typeof entry.context === 'object' ? entry.context : null;
+  }
+
+  function historyRunNodes(run) {
+    const nodes = run && run.source && Array.isArray(run.source.nodes) ? run.source.nodes : [];
+    if (nodes.length) {
+      return nodes.map(function (node, i) {
+        const text = String(node.originalText != null ? node.originalText : node.text || '');
+        return {
+          id: node.id || 'copy-' + (node.path || i),
+          path: node.path != null && node.path !== '' ? String(node.path) : String(i),
+          role: node.role || '',
+          selector: node.selector || '',
+          label: node.label || '',
+          text: text,
+          previousText: text,
+          originalText: text
+        };
+      });
+    }
+    const strings = Array.isArray(run && run.strings) ? run.strings : [];
+    return strings.filter(Boolean).map(function (text, i) {
+      return { id: 'copy-' + i, path: String(i), text: text, previousText: text, originalText: text };
+    });
+  }
+
+  function historyRunStrings(run) {
+    const fromNodes = historyRunNodes(run)
+      .map(function (node) {
+        return String(node.text || '').trim();
+      })
+      .filter(Boolean);
+    if (fromNodes.length) return fromNodes;
+    const combined = run && run.source && run.source.combinedText;
+    return combined ? [String(combined).trim()] : [];
+  }
+
+  function historyRunContext(run) {
+    const saved = historyContextFor(run && run.id) || {};
+    const ctx = Object.assign({}, saved);
+    if (!String(ctx.humanStrings || '').trim()) ctx.humanStrings = historyRunStrings(run).join('\n');
+    return ctx;
+  }
+
+  function showHistoryEmptyDetail(run) {
+    const ui = UI();
+    const escape = ui.escapeHtml || function (v) {
+      return String(v == null ? '' : v);
+    };
+    const field = ui.vpFieldHtml || function (label, control) {
+      return '<div>' + escape(label) + control + '</div>';
+    };
+    const staticText = ui.vpFieldStaticTextHtml || function (_attrs, content) {
+      return '<div>' + escape(content) + '</div>';
+    };
+    const btn = ui.vpButtonHtml || function (_v, label, attrs) {
+      return '<button type="button" data-history-reask="">' + label + '</button>';
+    };
+    const group = ui.vpButtonGroupHtml || function (html) {
+      return '<div>' + html + '</div>';
+    };
+    historyDetailRun = run;
+    renderVariants([]);
+    hideThinking();
+    const ctx = historyRunContext(run);
+    const fieldsHtml = HISTORY_CONTEXT_FIELDS.map(function (entry) {
+      const value = String(ctx[entry[0]] || '').trim();
+      if (!value) return '';
+      return field(entry[1], staticText({}, value, {}));
+    }).join('');
+    const offline = !!(companionOffline || historyShowingCache);
+    const offlineHint = 'Needs the companion. Start it to use this.';
+    const message =
+      run.status === 'error' && run.error && run.error !== 'No response'
+        ? 'Glean could not finish this request: ' + run.error
+        : 'No response from Glean.';
+    const box = panel.querySelector('#vc-variants');
+    if (box) {
+      box.innerHTML =
+        '<div class="vc-history-empty-detail">' +
+        (fieldsHtml ? '<div class="vc-history-context">' + fieldsHtml + '</div>' : '') +
+        '<p class="vc-history-empty-note vp-muted vp-type-support">' +
+        escape(message) +
+        '</p>' +
+        group(
+          btn(
+            'primary',
+            'Ask Glean again',
+            offline
+              ? {
+                  'data-history-reask': run.id,
+                  disabled: true,
+                  'aria-disabled': 'true',
+                  title: offlineHint
+                }
+              : { 'data-history-reask': run.id },
+            { flex: true }
+          ),
+          { stretch: true }
+        ) +
+        '</div>';
+      box.classList.remove('crank-hidden');
+    }
+    prependHistoryShot(run);
+    setStatus('');
+    setPanelStep('results');
+    scheduleAutogrowSync(panel);
+  }
+
+  function fillGleanFormFromContext(ctx) {
+    setGleanFieldValue('#vc-glean-strings', ctx.humanStrings || '');
+    setFieldSelectValue('vc-glean-component-type', ctx.componentType || 'General UI string');
+    setFieldSelectValue('vc-glean-timing', ctx.timing || 'Before');
+    setFieldSelectValue('vc-glean-user-type', ctx.userType || 'Fleet user');
+    resetOptionalGleanFieldsUi();
+    HISTORY_CONTEXT_FIELDS.forEach(function (entry) {
+      const selector = entry[2];
+      if (!selector || selector === '#vc-glean-strings') return;
+      const value = ctx[entry[0]] || '';
+      setGleanFieldValue(selector, value);
+      const fieldId = selector.slice(1);
+      if (String(value).trim() && panel.querySelector('[data-optional-field="' + fieldId + '"]')) {
+        revealOptionalGleanField(fieldId, { focus: false });
+      }
+    });
+    gleanContextTouched = true;
+    gleanValidationRequested = false;
+    updateGleanContextValidationUI();
+    scheduleAutogrowSync(panel);
+  }
+
+  async function askGleanAgainFromHistory(id) {
+    const run = historyDetailRun;
+    if (!run || run.id !== id) return;
+    if (companionOffline || historyShowingCache) {
+      setStatus('Asking Glean again needs the companion. Start it, then try again.');
+      return;
+    }
+    const button = panel.querySelector('[data-history-reask]');
+    if (button) button.disabled = true;
+    try {
+      const authed = await ensureTeamToken();
+      if (!authed) {
+        showTeamAuthUI('panel');
+        setStatus('Paste your team token below, then click Save token');
+        return;
+      }
+      let el = null;
+      if (run.selector && (!run.pageUrl || run.pageUrl === location.href)) {
+        try {
+          el = document.querySelector(run.selector);
+        } catch (_) {}
+      }
+      if (el && isCrankChrome(el)) el = null;
+      selectedEl = el;
+      layerFocus = el;
+      checkedLayers = el ? [el] : [];
+      selectedNodes = historyRunNodes(run);
+      snapshotSelectionNodes();
+      const data = await postJson('/api/selection', {
+        origin: run.origin || location.origin,
+        pageUrl: run.pageUrl || location.href,
+        selector: run.selector || '',
+        tagName: el ? el.tagName.toLowerCase() : '',
+        nodes: selectedNodes,
+        combinedText: historyRunStrings(run).join('\n'),
+        meta: { pathHints: pathHintsFromLocation() }
+      });
+      if (!data || !data.ok || !data.session) {
+        throw new Error((data && data.error) || 'Could not restore this selection');
+      }
+      applySessionFromServer(data.session);
+      panel.setAttribute('data-crank-has-selection', '1');
+      renderLayerList();
+      fillGleanFormFromContext(historyRunContext(run));
+      historyDetailRun = null;
+      if (!validateGleanContextClient().ok) setPanelStep('ask');
+      await requestGlean({ fromHistory: true });
+    } catch (err) {
+      const msg = err && err.message ? String(err.message) : 'Could not ask Glean again';
+      showToast(msg, 'error');
+      setStatus('Glean error: ' + msg);
+    } finally {
+      if (button && button.isConnected) button.disabled = false;
+    }
   }
 
   function watchHistoryRequest(id) {
@@ -2393,17 +2783,29 @@
         const data = await resp.json();
         const run = data && data.run;
         if (!run || run.status === 'running') return;
+        saveHistoryDetailToCache(run);
         clearInterval(holder.watch);
         holder.watch = null;
         delete liveRequests[id];
         if (panel && panel.getAttribute('data-crank-view') === 'history') loadHistoryList();
-        if (viewedRequestId === id) showHistoryRequest(run);
+        if (
+          viewedRequestId === id &&
+          returnToHistory &&
+          panel &&
+          panel.getAttribute('data-crank-view') === 'copy'
+        ) {
+          showHistoryRequest(run);
+        }
       } catch (_) {}
     }, 1500);
   }
 
   async function deleteHistoryRun(id) {
     if (!id) return;
+    if (companionOffline || historyShowingCache) {
+      setStatus('Deleting history needs the companion. Start it, then try again.');
+      return;
+    }
     const live = liveRequests[id];
     if (live && live.watch) {
       clearInterval(live.watch);
@@ -2424,29 +2826,48 @@
     }
   }
 
+  function openCachedHistoryRun(id) {
+    const cached = cachedHistoryDetail(id);
+    if (cached) {
+      showHistoryRequest(cached);
+      return true;
+    }
+    setStatus('This request needs the companion to open. Start it, then try again.');
+    return false;
+  }
+
   async function openHistoryRun(id) {
     if (!id) return;
+    const scroller = panel && panel.querySelector('.vp-panel-body');
+    if (scroller && panel.getAttribute('data-crank-view') === 'history') {
+      historyScrollTop = scroller.scrollTop;
+    }
+    const token = ++historyOpenToken;
+    if (companionOffline || historyShowingCache) {
+      openCachedHistoryRun(id);
+      return;
+    }
+    const stillWanted = function () {
+      return token === historyOpenToken && panel && panel.getAttribute('data-crank-view') === 'history';
+    };
     try {
       const resp = await fetch(COMPANION_HTTP + '/api/responses/' + encodeURIComponent(id), {
         cache: 'no-store',
         headers: authHeaders()
       });
+      if (!resp.ok) throw new Error('History request failed');
       const data = await resp.json();
       const run = data && data.run;
       if (!run) return;
-      showHistoryRequest(run);
-    } catch (_) {}
-  }
-
-  async function openHistoryPreview(id) {
-    await openHistoryRun(id);
-    const variant = (lastVariants || []).find(function (item) {
-      return item && Array.isArray(item.nodes) && item.nodes.length;
-    });
-    if (variant) previewVariantOnSelection(variant.id);
+      saveHistoryDetailToCache(run);
+      if (stillWanted()) showHistoryRequest(run);
+    } catch (_) {
+      if (stillWanted()) openCachedHistoryRun(id);
+    }
   }
 
   function closePanel() {
+    returnToHistory = false;
     stopSelect();
     hideSelectHint();
     restoreOriginal();
@@ -3567,10 +3988,18 @@
     /** HTTP /health is enough for Ask Glean (uses POST /api/variants). WS is optional. */
     async function probeCompanionHttp() {
       try {
-        const resp = await fetch(COMPANION_HTTP + '/health', {
-          cache: 'no-store',
-          headers: authHeaders()
-        });
+        const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+        const abortTimer = ctl ? setTimeout(function () { ctl.abort(); }, 3000) : null;
+        let resp;
+        try {
+          resp = await fetch(COMPANION_HTTP + '/health', {
+            cache: 'no-store',
+            headers: authHeaders(),
+            signal: ctl ? ctl.signal : undefined
+          });
+        } finally {
+          if (abortTimer) clearTimeout(abortTimer);
+        }
         const data = await resp.json().catch(function () {
           return {};
         });
@@ -3967,8 +4396,16 @@
   function setPageScrollbarHidden(hidden) {
     const html = document.documentElement;
     if (!html) return;
-    if (hidden) html.setAttribute('data-crank-page-scroll', 'hidden');
-    else html.removeAttribute('data-crank-page-scroll');
+    if (hidden) {
+      if (html.getAttribute('data-crank-page-scroll') !== 'hidden') {
+        const gap = Math.max(0, window.innerWidth - html.clientWidth);
+        html.style.setProperty('--crank-scrollbar-gap', gap + 'px');
+      }
+      html.setAttribute('data-crank-page-scroll', 'hidden');
+      return;
+    }
+    html.removeAttribute('data-crank-page-scroll');
+    html.style.removeProperty('--crank-scrollbar-gap');
   }
 
   function applyDockedPageLayout(docked) {
@@ -4044,9 +4481,15 @@
     const tip = ensureCrankTooltip();
     tip.textContent = text;
     tip.hidden = false;
+    // The docked panel is also z-index max and paints over a tip created earlier.
+    document.documentElement.appendChild(tip);
     const rect = btn.getBoundingClientRect();
+    tip.style.position = 'fixed';
+    tip.style.zIndex = '2147483647';
     tip.style.left = rect.left + rect.width / 2 + 'px';
     tip.style.top = rect.top - 6 + 'px';
+    tip.style.transform = 'translate(-50%, -100%)';
+    tip.style.pointerEvents = 'none';
   }
 
   function hideCrankTooltip() {
@@ -4078,9 +4521,9 @@
 
   function themeModeIcon(theme) {
     if (theme === 'dark') {
-      return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+      return '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18 12C18 15.3137 15.3137 18 12 18C8.68629 18 6 15.3137 6 12C6 8.68629 8.68629 6 12 6C15.3137 6 18 8.68629 18 12Z" fill="currentColor"/><path fill-rule="evenodd" clip-rule="evenodd" d="M12 1.25C12.4142 1.25 12.75 1.58579 12.75 2V3C12.75 3.41421 12.4142 3.75 12 3.75C11.5858 3.75 11.25 3.41421 11.25 3V2C11.25 1.58579 11.5858 1.25 12 1.25ZM4.39861 4.39861C4.6915 4.10572 5.16638 4.10572 5.45927 4.39861L5.85211 4.79145C6.145 5.08434 6.145 5.55921 5.85211 5.85211C5.55921 6.145 5.08434 6.145 4.79145 5.85211L4.39861 5.45927C4.10572 5.16638 4.10572 4.6915 4.39861 4.39861ZM19.6011 4.39887C19.894 4.69176 19.894 5.16664 19.6011 5.45953L19.2083 5.85237C18.9154 6.14526 18.4405 6.14526 18.1476 5.85237C17.8547 5.55947 17.8547 5.0846 18.1476 4.79171L18.5405 4.39887C18.8334 4.10598 19.3082 4.10598 19.6011 4.39887ZM1.25 12C1.25 11.5858 1.58579 11.25 2 11.25H3C3.41421 11.25 3.75 11.5858 3.75 12C3.75 12.4142 3.41421 12.75 3 12.75H2C1.58579 12.75 1.25 12.4142 1.25 12ZM20.25 12C20.25 11.5858 20.5858 11.25 21 11.25H22C22.4142 11.25 22.75 11.5858 22.75 12C22.75 12.4142 22.4142 12.75 22 12.75H21C20.5858 12.75 20.25 12.4142 20.25 12ZM18.1476 18.1476C18.4405 17.8547 18.9154 17.8547 19.2083 18.1476L19.6011 18.5405C19.894 18.8334 19.894 19.3082 19.6011 19.6011C19.3082 19.894 18.8334 19.894 18.5405 19.6011L18.1476 19.2083C17.8547 18.9154 17.8547 18.4405 18.1476 18.1476ZM5.85211 18.1479C6.145 18.4408 6.145 18.9157 5.85211 19.2086L5.45927 19.6014C5.16638 19.8943 4.6915 19.8943 4.39861 19.6014C4.10572 19.3085 4.10572 18.8336 4.39861 18.5407L4.79145 18.1479C5.08434 17.855 5.55921 17.855 5.85211 18.1479ZM12 20.25C12.4142 20.25 12.75 20.5858 12.75 21V22C12.75 22.4142 12.4142 22.75 12 22.75C11.5858 22.75 11.25 22.4142 11.25 22V21C11.25 20.5858 11.5858 20.25 12 20.25Z" fill="currentColor"/></svg>';
     }
-    return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 7 7 0 1 0 20 14.5z"/></svg>';
+    return '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 11.5373 21.3065 11.4608 21.0672 11.8568C19.9289 13.7406 17.8615 15 15.5 15C11.9101 15 9 12.0899 9 8.5C9 6.13845 10.2594 4.07105 12.1432 2.93276C12.5392 2.69347 12.4627 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" fill="currentColor"/></svg>';
   }
 
   function readPanelTheme() {
@@ -4931,6 +5374,17 @@
       '<button type="button" class="vc-surface-tab" data-crank-surface="layers" role="tab" aria-selected="false">Layers</button>' +
       '</div>' +
       '<div class="vp-panel-body" id="vp-body">' +
+      '<div id="vc-companion-offline" class="vp-panel-block crank-hidden" style="display:none;">' +
+      '<div class="vc-offline-copy">' +
+      '<div class="vp-type-label vc-offline-title">Agent offline</div>' +
+      '<p class="vc-offline-lead">Ask Glean needs the companion running on this machine.</p>' +
+      '</div>' +
+      '<p id="vc-companion-msg" class="vc-offline-msg" role="status" aria-live="polite">Run the command in your terminal. Crank reconnects on its own.</p>' +
+      '<code id="vc-companion-command" class="vc-offline-command">' + escape(companionStartCommand()) + '</code>' +
+      '<div class="vc-offline-actions">' +
+      btn('secondary', 'Copy command', { id: 'vc-companion-copy', type: 'button' }) +
+      '</div>' +
+      '</div>' +
       '<section id="vc-layers" class="vp-panel-block"></section>' +
       '<div id="vc-step-nav" class="vp-panel-block vp-panel-block--plain">' +
       btn('ghost', 'Back', { id: 'vc-back', type: 'button' }) +
@@ -4961,16 +5415,6 @@
       '</section>' +
       '<p id="vc-status" class="vp-panel-block vp-panel-block--plain vp-muted vp-type-support crank-hidden" aria-live="polite"></p>' +
       '<div id="vc-toast" style="display:none;"></div>' +
-      '<div id="vc-companion-offline" class="vp-panel-block crank-hidden" style="display:none;">' +
-      '<div class="vc-offline-copy">' +
-      '<div class="vp-type-label vc-offline-title">Agent offline</div>' +
-      '<p class="vc-offline-lead">Ask Glean needs the companion running on this machine. Crank checks again every few seconds. If it stays offline, Diagnose with agent copies a prompt you can paste into chat so the agent can find the cause and start it.</p>' +
-      '</div>' +
-      '<div class="vc-offline-actions">' +
-      btn('secondary', 'Retry connection', { id: 'vc-companion-retry', type: 'button' }) +
-      btn('secondary', 'Diagnose with agent', { id: 'vc-companion-diagnose', type: 'button' }) +
-      '</div>' +
-      '</div>' +
       '<section id="vc-team-auth" class="vp-panel-block vp-panel-section crank-hidden" style="display:none;">' +
       '<div class="vp-type-label" style="font-weight:620;margin-bottom:6px;">Team token required</div>' +
       '<p class="vp-muted vp-type-micro" style="margin:0 0 8px;line-height:1.45;">Paste the same value as <code>CRANK_TEAM_TOKEN</code> in your project <code>.env</code>. It is saved in this browser only — not sent to chat.</p>' +
@@ -4991,9 +5435,6 @@
       '<div id="vc-agent-handoff" class="vp-panel-block crank-hidden" style="display:none;"></div>' +
       '</div>' +
       '<footer class="vp-panel-footer" id="vc-panel-footer">' +
-      '<div class="vp-panel-block">' +
-      buildGleanOptionsHtml(ui) +
-      '</div>' +
       '<div class="vp-panel-block">' +
       group(
         btn('primary', 'Ask Glean', { id: 'vc-glean' }, { flex: true }),
@@ -5062,6 +5503,12 @@
     const backBtn = panel.querySelector('#vc-back');
     if (backBtn) {
       backBtn.addEventListener('click', function () {
+        if (returnToHistory) {
+          setPanelStep('ask');
+          pendingHistoryScroll = historyScrollTop;
+          activateTool('history');
+          return;
+        }
         setPanelStep('ask');
       });
     }
@@ -5069,21 +5516,10 @@
     initDepthTune();
     const panelBody = panel.querySelector('.vp-panel-body');
     if (panelBody) bindOverlayScrollbar(panelBody);
-    const companionRetry = panel.querySelector('#vc-companion-retry');
-    const companionDiagnose = panel.querySelector('#vc-companion-diagnose');
-    if (companionRetry) {
-      companionRetry.addEventListener('click', function () {
-        retryCompanionConnection();
-      });
-    }
-    if (companionDiagnose) {
-      companionDiagnose.addEventListener('click', async function () {
-        const ok = await copyTextToClipboard(companionDiagnosePrompt());
-        const msg = ok
-          ? 'Copied diagnose prompt — ' + PASTE_IN_AGENT_CHAT
-          : 'Copy failed — allow clipboard access and try again';
-        showToast(msg, ok ? 'ok' : 'error');
-        setStatus(msg);
+    const companionCopy = panel.querySelector('#vc-companion-copy');
+    if (companionCopy) {
+      companionCopy.addEventListener('click', function () {
+        copyCompanionCommand();
       });
     }
     const teamTokenInput = panel.querySelector('#vc-team-token');
@@ -5111,17 +5547,37 @@
     }
     // Event delegation so Agent/Preview/Copy keep working after re-renders.
     const variantsBox = panel.querySelector('#vc-variants');
+    if (variantsBox && !variantsBox.__crankTableKeys) {
+      variantsBox.__crankTableKeys = true;
+      variantsBox.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        const t = ev.target instanceof Element ? ev.target.closest('[data-variants-table]') : null;
+        if (!t) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        openOptionsTable(lastVariants);
+      });
+    }
     if (variantsBox && !variantsBox.__crankDelegated) {
       variantsBox.__crankDelegated = true;
       variantsBox.addEventListener('click', function (ev) {
         const target = ev.target && ev.target.closest
           ? ev.target.closest(
-              '[data-variant-agent],[data-variant-preview],[data-variant-copy]'
+              '[data-variant-agent],[data-variant-preview],[data-variant-copy],[data-history-reask],[data-variants-table]'
             )
           : null;
         if (!target || !variantsBox.contains(target)) return;
         if (ev.preventDefault) ev.preventDefault();
         if (ev.stopPropagation) ev.stopPropagation();
+        if (target.hasAttribute('data-variants-table')) {
+          openOptionsTable(lastVariants);
+          return;
+        }
+        const reaskId = target.getAttribute('data-history-reask');
+        if (reaskId) {
+          if (!target.disabled) askGleanAgainFromHistory(reaskId);
+          return;
+        }
         const agentId = target.getAttribute('data-variant-agent');
         if (agentId) {
           queueAgentVariant(agentId);
@@ -5136,27 +5592,6 @@
         if (copyId) {
           copyVariantPrompt(copyId);
         }
-      });
-    }
-    const optionCountSel = panel.querySelector('#vc-option-count');
-    if (optionCountSel) {
-      try {
-        const saved = localStorage.getItem(OPTION_COUNT_KEY);
-        if (saved) {
-          const n = parseInt(saved, 10);
-          if (Number.isFinite(n)) {
-            const clamped = Math.min(
-              GLEAN_OPTION_COUNT_MAX,
-              Math.max(GLEAN_OPTION_COUNT_MIN, n)
-            );
-            setFieldSelectValue('vc-option-count', String(clamped));
-          }
-        }
-      } catch (_) {}
-      optionCountSel.addEventListener('change', function () {
-        try {
-          localStorage.setItem(OPTION_COUNT_KEY, optionCountSel.value);
-        } catch (_) {}
       });
     }
     initFieldControls();
@@ -5187,56 +5622,57 @@
       });
     }
     if (settingsCount) {
+      try {
+        const saved = localStorage.getItem(OPTION_COUNT_KEY);
+        if (saved) {
+          const n = parseInt(saved, 10);
+          if (Number.isFinite(n)) {
+            const clamped = Math.min(
+              GLEAN_OPTION_COUNT_MAX,
+              Math.max(GLEAN_OPTION_COUNT_MIN, n)
+            );
+            setFieldSelectValue('vc-settings-option-count', String(clamped));
+          }
+        }
+      } catch (_) {}
       settingsCount.addEventListener('change', function () {
         try {
           localStorage.setItem(OPTION_COUNT_KEY, settingsCount.value);
         } catch (_) {}
-        setFieldSelectValue('vc-option-count', settingsCount.value);
       });
     }
     bindDepthTuneSliders();
     const historyList = panel.querySelector('#vc-history-list');
     if (historyList && !historyList.__crankBound) {
       historyList.__crankBound = true;
+      const historyCardFor = function (ev) {
+        const el = ev.target instanceof Element ? ev.target : ev.target && ev.target.parentElement;
+        const card = el && el.closest ? el.closest('.vc-history-card[data-history-id]') : null;
+        return card && historyList.contains(card) ? card : null;
+      };
       historyList.addEventListener('click', function (ev) {
-        const openBtn = ev.target && ev.target.closest ? ev.target.closest('[data-history-preview]') : null;
-        if (openBtn) {
+        const el = ev.target instanceof Element ? ev.target : null;
+        const del = el ? el.closest('[data-history-delete]') : null;
+        if (del && historyList.contains(del)) {
           ev.preventDefault();
           ev.stopPropagation();
-          openHistoryPreview(openBtn.getAttribute('data-history-preview'));
+          if (!del.disabled) deleteHistoryRun(del.getAttribute('data-history-delete'));
           return;
         }
-        const del = ev.target && ev.target.closest ? ev.target.closest('[data-history-delete]') : null;
-        if (del) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          deleteHistoryRun(del.getAttribute('data-history-delete'));
-          return;
-        }
-        const row = ev.target && ev.target.closest ? ev.target.closest('[data-history-id]') : null;
-        if (!row) return;
-        openHistoryRun(row.getAttribute('data-history-id'));
+        const card = historyCardFor(ev);
+        if (!card) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        openHistoryRun(card.getAttribute('data-history-id'));
       });
       historyList.addEventListener('keydown', function (ev) {
         if (ev.key !== 'Enter' && ev.key !== ' ') return;
-        const openBtn = ev.target && ev.target.closest ? ev.target.closest('[data-history-preview]') : null;
-        if (openBtn) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          openHistoryPreview(openBtn.getAttribute('data-history-preview'));
-          return;
-        }
-        const del = ev.target && ev.target.closest ? ev.target.closest('[data-history-delete]') : null;
-        if (del) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          deleteHistoryRun(del.getAttribute('data-history-delete'));
-          return;
-        }
-        const row = ev.target && ev.target.closest ? ev.target.closest('[data-history-id]') : null;
-        if (!row || !historyList.contains(row)) return;
+        const card = historyCardFor(ev);
+        // The delete button activates itself via its native click.
+        if (!card || ev.target !== card) return;
         ev.preventDefault();
-        openHistoryRun(row.getAttribute('data-history-id'));
+        ev.stopPropagation();
+        openHistoryRun(card.getAttribute('data-history-id'));
       });
     }
     setPanelStep('ask');
@@ -5815,9 +6251,9 @@
 
     const recommended = !!variant.recommended;
     const previewIcon =
-      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 4C16.1819 4 19.0285 6.49933 20.7256 8.7041C21.5755 9.80824 22 10.3607 22 12C22 13.6393 21.5755 14.1918 20.7256 15.2959C19.0285 17.5007 16.1819 20 12 20C7.81811 20 4.97149 17.5007 3.27441 15.2959C2.42453 14.1918 2 13.6393 2 12C2 10.3607 2.42453 9.80824 3.27441 8.7041C4.97149 6.49933 7.81811 4 12 4ZM12 9C10.3431 9 9 10.3431 9 12C9 13.6569 10.3431 15 12 15C13.6569 15 15 13.6569 15 12C15 10.3431 13.6569 9 12 9Z" fill="currentColor"/></svg>';
     const copyIcon =
-      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M15.2402 5.61426C17.9551 5.61426 19.3127 5.61431 20.1562 6.46094C20.9998 7.30786 21 8.67127 21 11.3975V16.2168C21 18.9429 20.9998 20.3064 20.1562 21.1533C19.3127 21.9998 17.955 22 15.2402 22H12.3604C9.64515 22 8.2869 22.0002 7.44336 21.1533C6.59984 20.3064 6.60059 18.9429 6.60059 16.2168V11.3975C6.60059 8.67128 6.59984 7.30786 7.44336 6.46094C8.28689 5.61402 9.64506 5.61426 12.3604 5.61426H15.2402Z" fill="currentColor"/><path d="M15.2402 2C16.7616 2.0001 18.0629 2.94764 18.5898 4.28711C17.7091 4.16822 16.6114 4.16887 15.335 4.16895H12.2656C10.9891 4.16887 9.8886 4.16821 9.00781 4.28711C8.06393 4.41454 7.15966 4.70266 6.42578 5.43945C5.69187 6.17631 5.40523 7.08449 5.27832 8.03223C5.15992 8.91654 5.16008 10.0211 5.16016 11.3027V16.3125C5.1601 17.374 5.16027 18.6502 5.22754 19.5596C3.92032 19.0177 3 17.7249 3 16.2168V10.3789C2.99999 8.60799 3.00049 7.20531 3.14746 6.10742C3.29878 4.97738 3.61751 4.06213 4.33594 3.34082C5.05433 2.61968 5.96542 2.29937 7.09082 2.14746C8.18439 1.99988 9.58168 1.99999 11.3457 2H15.2402Z" fill="currentColor"/></svg>';
     return (
       '<article class="vc-variant-row' +
       (recommended ? ' is-recommended' : '') +
@@ -5883,6 +6319,460 @@
     );
   }
 
+  // ---- View Table modal (port of Figma Crank Copy parseAgentTable / renderTable) ----
+  const TABLE_CLOSE_ICON_SVG =
+    '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12ZM8.96963 8.96965C9.26252 8.67676 9.73739 8.67676 10.0303 8.96965L12 10.9393L13.9696 8.96967C14.2625 8.67678 14.7374 8.67678 15.0303 8.96967C15.3232 9.26256 15.3232 9.73744 15.0303 10.0303L13.0606 12L15.0303 13.9696C15.3232 14.2625 15.3232 14.7374 15.0303 15.0303C14.7374 15.3232 14.2625 15.3232 13.9696 15.0303L12 13.0607L10.0303 15.0303C9.73742 15.3232 9.26254 15.3232 8.96965 15.0303C8.67676 14.7374 8.67676 14.2625 8.96965 13.9697L10.9393 12L8.96963 10.0303C8.67673 9.73742 8.67673 9.26254 8.96963 8.96965Z"/></svg>';
+  const GRADE_COLUMNS = [
+    ['clear', 'Clarity'],
+    ['consistent', 'Consistency'],
+    ['concise', 'Conciseness'],
+    ['conversational', 'Conversation'],
+    ['coaching', 'Coaching']
+  ];
+
+  let tableModalEl = null;
+  let tableModalReturnFocus = null;
+
+  // Ported from ~/Downloads/crank-copy 2/ui.html parseAgentTable.
+  function parseAgentTable(md) {
+    const empty = { rows: [], notesBefore: '', notesAfter: '' };
+    if (!md) return empty;
+    const lines = String(md).split('\n');
+    const splitRow = function (row) {
+      return row
+        .trim()
+        .replace(/^\|/, '')
+        .replace(/\|$/, '')
+        .split('|')
+        .map(function (c) {
+          return c
+            .replace(/<br\s*\/?>/gi, '\n')
+            .split('\n')
+            .map(function (l) {
+              return l.trim();
+            })
+            .join('\n')
+            .trim();
+        });
+    };
+    const isSeparator = function (cells) {
+      return (
+        cells.length > 0 &&
+        cells.every(function (c) {
+          return /^:?-{2,}:?$/.test(c);
+        })
+      );
+    };
+    const headerIndex = lines.findIndex(function (l) {
+      return l.trim().startsWith('|');
+    });
+    if (headerIndex === -1) {
+      const pipeLines = lines
+        .filter(function (l) {
+          return l.includes('|');
+        })
+        .map(splitRow);
+      if (!pipeLines.some(isSeparator)) return empty;
+      return {
+        rows: pipeLines.filter(function (c) {
+          return !isSeparator(c);
+        }),
+        notesBefore: '',
+        notesAfter: ''
+      };
+    }
+    const header = splitRow(lines[headerIndex]);
+    const rows = [header];
+    const pipesPerRow = header.length + 1;
+    let current = null;
+    let lastRowEnd = headerIndex;
+    for (let i = headerIndex + 1; i < lines.length; i++) {
+      const line = lines[i];
+      const startsRow = line.trim().startsWith('|');
+      if (current !== null && startsRow && current.trim().endsWith('|')) {
+        const shortCells = splitRow(current);
+        if (!isSeparator(shortCells)) rows.push(shortCells);
+        current = null;
+        lastRowEnd = i - 1;
+      }
+      if (current === null) {
+        if (!startsRow) continue;
+        current = line;
+      } else {
+        current += '\n' + line;
+      }
+      const pipes = (current.match(/\|/g) || []).length;
+      if (pipes >= pipesPerRow && current.trim().endsWith('|')) {
+        const cells = splitRow(current);
+        if (!isSeparator(cells)) rows.push(cells);
+        current = null;
+        lastRowEnd = i;
+      }
+    }
+    if (current !== null) {
+      const cells = splitRow(current);
+      if (!isSeparator(cells)) rows.push(cells);
+      lastRowEnd = lines.length - 1;
+    }
+    const note = function (ls) {
+      return ls.join('\n').replace(/<br\s*\/?>/gi, '\n').trim();
+    };
+    return {
+      rows: rows,
+      notesBefore: note(lines.slice(0, headerIndex)),
+      notesAfter: note(lines.slice(lastRowEnd + 1))
+    };
+  }
+
+  // Safe inline render: text nodes only, plus <br> for newlines and <strong> for **bold**.
+  function appendInlineMarkdown(el, text) {
+    const lines = String(text == null ? '' : text).split('\n');
+    lines.forEach(function (line, li) {
+      if (li) el.appendChild(document.createElement('br'));
+      const re = /\*\*([^*]+)\*\*/g;
+      let last = 0;
+      let m;
+      while ((m = re.exec(line)) !== null) {
+        if (m.index > last) el.appendChild(document.createTextNode(line.slice(last, m.index)));
+        const strong = document.createElement('strong');
+        strong.textContent = m[1];
+        el.appendChild(strong);
+        last = re.lastIndex;
+      }
+      if (last < line.length) el.appendChild(document.createTextNode(line.slice(last)));
+    });
+  }
+
+  function variantTableCells(variant) {
+    const v = variant || {};
+    const f = v.fields && typeof v.fields === 'object' ? v.fields : null;
+    const cells = [];
+    const push = function (label, text) {
+      const t = String(text == null ? '' : text).trim();
+      if (t) cells.push({ label: label, text: t });
+    };
+    if (f) {
+      push('Heading', f.heading);
+      if (Array.isArray(f.bodies) && f.bodies.length) {
+        f.bodies.forEach(function (t, i) {
+          push(f.bodies.length > 1 ? 'Body ' + (i + 1) : 'Body', t);
+        });
+      } else {
+        push('Body', f.body);
+      }
+      if (Array.isArray(f.copies) && f.copies.length) {
+        f.copies.forEach(function (t, i) {
+          push(f.copies.length > 1 ? 'Copy ' + (i + 1) : 'Copy', t);
+        });
+      }
+      push('CTA', f.cta);
+      push('Label', f.label);
+    }
+    if (!cells.length) {
+      (v.nodes || []).forEach(function (n, idx) {
+        if (!n || isRuntimeOnlyNode(n)) return;
+        const t = n.text != null && String(n.text).trim() ? n.text : n.originalText;
+        push(n.copyLabel || n.label || (n.role ? String(n.role) : 'Copy ' + (idx + 1)), t);
+      });
+    }
+    if (!cells.length) push('Copy', v.rawText || v.summary || '');
+    return cells;
+  }
+
+  // Fallback for runs saved before the raw agent table was kept.
+  function rebuildTableRows(variants) {
+    const list = (variants || []).filter(Boolean);
+    const columns = [];
+    const parsed = list.map(function (v) {
+      const cells = variantTableCells(v);
+      cells.forEach(function (c) {
+        if (columns.indexOf(c.label) === -1) columns.push(c.label);
+      });
+      return cells;
+    });
+    const hasGrades = list.some(function (v) {
+      return !!gradesFor(v);
+    });
+    const hasNotes = !hasGrades && list.some(function (v) {
+      return v.scores;
+    });
+    const header = ['Option'].concat(columns);
+    if (hasNotes) header.push('Agent notes');
+    const rows = [header];
+    list.forEach(function (v, i) {
+      const row = [(v.label || v.id || 'Option ' + (i + 1))];
+      columns.forEach(function (col) {
+        const hit = parsed[i].filter(function (c) {
+          return c.label === col;
+        })[0];
+        row.push(hit ? hit.text : '');
+      });
+      if (hasNotes) row.push(v.scores || '');
+      rows.push(row);
+    });
+    return { rows: rows, notesBefore: '', notesAfter: '' };
+  }
+
+  // Grades for a variant: variant.grades, rawOption.grades, or parsed from the saved "Clarity: Strong — …" notes.
+  function gradesFor(v) {
+    if (!v) return null;
+    const has = function (g) {
+      return (
+        g &&
+        typeof g === 'object' &&
+        GRADE_COLUMNS.some(function (c) {
+          const x = g[c[0]];
+          return x && typeof x === 'object' && (x.score || x.explanation || x.rationale);
+        })
+      );
+    };
+    if (has(v.grades)) return v.grades;
+    if (v.rawOption && has(v.rawOption.grades)) return v.rawOption.grades;
+    const text = typeof v.scores === 'string' ? v.scores : '';
+    if (!text) return null;
+    const labels = GRADE_COLUMNS.map(function (c) {
+      return c[1];
+    }).join('|');
+    const re = new RegExp('(?:^|\\s·\\s)(' + labels + '):\\s*', 'g');
+    const hits = [];
+    let m;
+    while ((m = re.exec(text)) !== null) hits.push({ label: m[1], start: m.index, end: re.lastIndex });
+    if (!hits.length) return null;
+    const out = {};
+    hits.forEach(function (h, i) {
+      const seg = text.slice(h.end, i + 1 < hits.length ? hits[i + 1].start : text.length).trim();
+      const parts = seg.split(/\s+—\s+/);
+      const col = GRADE_COLUMNS.filter(function (c) {
+        return c[1] === h.label;
+      })[0];
+      out[col[0]] = { score: parts.shift() || '', explanation: parts.join(' — ') };
+    });
+    return has(out) ? out : null;
+  }
+
+  function addGradeColumns(data, list) {
+    const rows = data.rows;
+    if (!rows.length || !list.length) return data;
+    const grades = list.map(gradesFor);
+    if (!grades.some(Boolean)) return data;
+    const header = rows[0];
+    const lower = header.map(function (h) {
+      return String(h || '').trim().toLowerCase();
+    });
+    const toAdd = GRADE_COLUMNS.filter(function (g) {
+      return lower.indexOf(g[1].toLowerCase()) === -1;
+    });
+    if (!toAdd.length) return data;
+    let at = header.length;
+    const last = lower[lower.length - 1] || '';
+    if (header.length > 1 && /note|rationale|feedback|comment|explanation/.test(last)) at = header.length - 1;
+    const optNum = function (text) {
+      const mm = /(\d+)/.exec(String(text || ''));
+      return mm ? Number(mm[1]) : 0;
+    };
+    const byNum = {};
+    list.forEach(function (v, i) {
+      const n = optNum(v.label || v.id);
+      if (n && !byNum[n]) byNum[n] = i;
+    });
+    const gradeCols = [];
+    toAdd.forEach(function (g, k) {
+      gradeCols.push(at + k);
+    });
+    const next = rows.map(function (cells, r) {
+      const copy = cells.slice();
+      while (copy.length < at) copy.push('');
+      const ins = toAdd.map(function (g) {
+        if (r === 0) return g[1];
+        const n = optNum(cells[0]);
+        const idx = n && byNum[n] != null ? byNum[n] : r - 1;
+        const gr = grades[idx] && grades[idx][g[0]];
+        if (!gr || typeof gr !== 'object') return '\u2014';
+        const score = String(gr.score || '').trim();
+        const expl = String(gr.explanation || gr.rationale || '').trim();
+        if (!score && !expl) return '\u2014';
+        return score + (expl ? '\n' + expl : '');
+      });
+      Array.prototype.splice.apply(copy, [at, 0].concat(ins));
+      return copy;
+    });
+    return {
+      rows: next,
+      notesBefore: data.notesBefore,
+      notesAfter: data.notesAfter,
+      gradeCols: gradeCols
+    };
+  }
+
+  function tableDataFor(variants, rawTable) {
+    const list = Array.isArray(variants) ? variants.filter(Boolean) : [];
+    let md = rawTable || '';
+    if (!md) {
+      const hit = list.filter(function (v) {
+        return v.agentTable;
+      })[0];
+      md = hit ? hit.agentTable : '';
+    }
+    let data = null;
+    if (md) {
+      const parsed = parseAgentTable(md);
+      if (parsed.rows.length) data = parsed;
+    }
+    if (!data && list.length) data = rebuildTableRows(list);
+    return data ? addGradeColumns(data, list) : null;
+  }
+
+  function buildTableElement(data) {
+    const wrap = document.createElement('div');
+    const table = document.createElement('table');
+    table.className = 'vp-options-table';
+    if (data.notesBefore) {
+      const cap = document.createElement('caption');
+      cap.className = 'vp-options-table-note';
+      appendInlineMarkdown(cap, data.notesBefore);
+      table.appendChild(cap);
+    }
+    const width = data.rows[0] ? data.rows[0].length : 1;
+    if (width > 1) {
+      const colgroup = document.createElement('colgroup');
+      let minW = 0;
+      for (let c = 0; c < width; c++) {
+        const col = document.createElement('col');
+        if (c === 0) {
+          col.style.width = '72px';
+          minW += 72;
+        } else if (c < width - 1) {
+          col.style.width = '140px';
+          minW += 140;
+        } else {
+          minW += 320;
+        }
+        colgroup.appendChild(col);
+      }
+      table.appendChild(colgroup);
+      table.style.minWidth = minW + 'px';
+    }
+    const gradeSet = {};
+    (data.gradeCols || []).forEach(function (i) {
+      gradeSet[i] = true;
+    });
+    data.rows.forEach(function (cells, r) {
+      const tr = document.createElement('tr');
+      cells.forEach(function (text) {
+        const cell = document.createElement(r === 0 ? 'th' : 'td');
+        if (r === 0) cell.setAttribute('scope', 'col');
+        const ci = tr.children.length;
+        if (r > 0 && ci === 0) {
+          const t = String(text == null ? '' : text).replace(/^\s*option\s*[:#]?\s*#?\s*/i, '').trim();
+          const mt = /^(\S+?)\s*\(([^)]+)\)\s*$/.exec(t);
+          if (mt) {
+            cell.appendChild(document.createTextNode(mt[1] + ' '));
+            const tag = document.createElement('span');
+            tag.className = 'vp-options-table-tag';
+            tag.textContent = mt[2];
+            cell.appendChild(tag);
+          } else {
+            cell.appendChild(document.createTextNode(t));
+          }
+        } else if (r > 0 && gradeSet[ci]) {
+          const s = String(text == null ? '' : text);
+          const nl = s.indexOf('\n');
+          const sc = document.createElement('strong');
+          sc.className = 'vp-options-table-grade-score';
+          sc.textContent = nl === -1 ? s : s.slice(0, nl);
+          cell.appendChild(sc);
+          if (nl !== -1 && s.slice(nl + 1).trim()) {
+            const ex = document.createElement('div');
+            ex.className = 'vp-options-table-grade-note';
+            ex.textContent = s.slice(nl + 1).trim();
+            cell.appendChild(ex);
+          }
+        } else {
+          appendInlineMarkdown(cell, text);
+        }
+        tr.appendChild(cell);
+      });
+      table.appendChild(tr);
+    });
+    if (data.notesAfter) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.className = 'vp-options-table-note';
+      td.colSpan = width;
+      appendInlineMarkdown(td, data.notesAfter);
+      tr.appendChild(td);
+      table.appendChild(tr);
+    }
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  function closeOptionsTable() {
+    if (!tableModalEl) return;
+    const el = tableModalEl;
+    tableModalEl = null;
+    document.removeEventListener('keydown', onOptionsTableKey, true);
+    if (el.parentNode) el.parentNode.removeChild(el);
+    const back = tableModalReturnFocus;
+    tableModalReturnFocus = null;
+    if (back && back.focus && document.contains(back)) {
+      try {
+        back.focus();
+      } catch (_) {}
+    }
+  }
+
+  function onOptionsTableKey(ev) {
+    if (!tableModalEl) return;
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeOptionsTable();
+      return;
+    }
+    if (ev.key === 'Tab') {
+      // Only the Close control is focusable; keep focus on it.
+      ev.preventDefault();
+      const closeBtn = tableModalEl.querySelector('.vp-options-modal-close');
+      if (closeBtn) closeBtn.focus();
+    }
+  }
+
+  function openOptionsTable(variants, rawTable) {
+    if (!panel) return;
+    const data = tableDataFor(variants, rawTable);
+    if (!data || !data.rows.length) return;
+    if (tableModalEl) closeOptionsTable();
+    tableModalReturnFocus = document.activeElement;
+    const el = document.createElement('div');
+    el.className = 'vp-options-modal';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    el.setAttribute('aria-label', 'Table');
+    el.innerHTML =
+      '<div class="vp-options-modal-backdrop" data-table-close></div>' +
+      '<div class="vp-options-modal-panel" tabindex="-1">' +
+      '<div class="vp-options-modal-header"><h2 class="vp-options-modal-title">Table</h2>' +
+      '<button type="button" class="vp-options-modal-close" data-table-close aria-label="Close" title="Close">' +
+      TABLE_CLOSE_ICON_SVG +
+      '</button></div>' +
+      '<div class="vp-options-modal-body"></div></div>';
+    el.querySelector('.vp-options-modal-body').appendChild(buildTableElement(data));
+    el.addEventListener('click', function (ev) {
+      const t = ev.target instanceof Element ? ev.target : null;
+      if (t && t.closest('[data-table-close]')) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeOptionsTable();
+      }
+    });
+    panel.appendChild(el);
+    tableModalEl = el;
+    document.addEventListener('keydown', onOptionsTableKey, true);
+    const closeBtn = el.querySelector('.vp-options-modal-close');
+    if (closeBtn) closeBtn.focus();
+  }
+
   function renderVariants(variants) {
     const box = panel.querySelector('#vc-variants');
     const ui = UI();
@@ -5894,6 +6784,11 @@
     }
     box.classList.remove('crank-hidden');
     box.innerHTML =
+      (tableDataFor(lastVariants)
+        ? '<div class="vp-panel-stroke vc-variant-divider vc-view-table-divider vc-view-table-divider--top" role="separator"></div>' +
+          '<div class="vc-view-table vc-variant-title" role="button" tabindex="0" data-variants-table>View table</div>' +
+          '<div class="vp-panel-stroke vc-variant-divider vc-view-table-divider" role="separator"></div>'
+        : '') +
       '<div class="vc-variants-list">' +
       lastVariants
         .map(function (v) {
@@ -6639,7 +7534,9 @@
       restoreScroll();
     }
   }
-  async function requestGlean() {
+  async function requestGlean(opts) {
+    returnToHistory = !!(opts && opts.fromHistory === true);
+    historyDetailRun = null;
     gleanValidationRequested = true;
     const gleanValidation = updateGleanContextValidationUI();
     if (!gleanValidation.ok) {
@@ -6691,6 +7588,7 @@
       });
       responseId = started && started.id ? String(started.id) : '';
     } catch (_) {}
+    if (responseId) saveHistoryContext(responseId, gleanValidation.context);
     const pending = liveRequests[pendingId];
     delete liveRequests[pendingId];
     if (responseId) {
@@ -6714,7 +7612,7 @@
           : window.__CRANK_COMPANION_ONLINE__ !== false;
       if (!companionOk) {
         showCompanionOfflineUI();
-        showToast('Companion offline — start it, then click Retry', 'error');
+        showToast('Companion offline — copy the command in the banner and run it', 'error');
         delete liveRequests[activeId];
         if (responseId) {
           postJson('/api/responses/' + encodeURIComponent(responseId) + '/expire', {
@@ -6797,6 +7695,7 @@
 
   function onMove(ev) {
     if (!selecting) return;
+    if (eventInCrankChrome(ev)) return;
     const target = document.elementFromPoint(ev.clientX, ev.clientY);
     if (!(target instanceof Element) || isCrankChrome(target)) return;
     const r = target.getBoundingClientRect();
@@ -6808,6 +7707,7 @@
 
   async function onClick(ev) {
     if (!selecting) return;
+    if (eventInCrankChrome(ev)) return;
     const target = pickerElement(ev);
     if (!target) return;
     ev.preventDefault();

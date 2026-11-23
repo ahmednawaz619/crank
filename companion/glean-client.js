@@ -445,6 +445,7 @@ function mapCardOptionsToVariants(parsed, session, maxOptions) {
       recommended: !!option.recommended,
       isHumanWritten: option.isHumanWritten === true
     };
+    if (option.grades && typeof option.grades === 'object') variant.grades = option.grades;
     const feedback = [gradesNote, ...rationales].filter(Boolean).join(' · ').trim();
     if (feedback) variant.scores = feedback;
     variants.push(variant);
@@ -453,7 +454,17 @@ function mapCardOptionsToVariants(parsed, session, maxOptions) {
   return variants.slice(0, cap);
 }
 
+/** Keep the agent's markdown `table` on the response so the panel can show it (and history persists it). */
 function parseOptionsFromAgentText(text, session, maxOptions) {
+  const variants = parseOptionsFromAgentTextInner(text, session, maxOptions);
+  const table = extractMarkdownTableFromAgentJson(text);
+  if (table && Array.isArray(variants) && variants.length) {
+    variants[0].agentTable = table;
+  }
+  return variants;
+}
+
+function parseOptionsFromAgentTextInner(text, session, maxOptions) {
   const cap = optionParseCap(maxOptions);
   const parsed = parseCopywritingAgentJson(text);
   if (parsed.table) {

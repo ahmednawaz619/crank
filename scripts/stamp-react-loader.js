@@ -23,7 +23,8 @@ const jsBlock =
 
 function upsert(file, block, pattern) {
   const p = path.join(root, file);
-  let src = fs.readFileSync(p, 'utf8');
+  const original = fs.readFileSync(p, 'utf8');
+  let src = original;
   if (pattern.test(src)) {
     src = src.replace(pattern, block.trim() + '\n');
   } else if (file === 'react.mjs') {
@@ -34,7 +35,8 @@ function upsert(file, block, pattern) {
   } else {
     src = src.replace("'use strict';", `'use strict';${jsBlock}`);
   }
-  fs.writeFileSync(p, src);
+  // Rewriting an identical react.mjs still makes Vite full-reload the page.
+  if (src !== original) fs.writeFileSync(p, src);
 }
 
 upsert(
